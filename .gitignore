@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+*.db
+*.sqlite
+*.sqlite3
+
+# Secrets
+.env
+config_local.py
+*.pem
+*.key
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+*.log.*
+
+# Excel files (опционально)
+*.xlsx
+*.xls
+*.xlsm
+
+# Temp files
+/tmp/
+*.tmp
+
+# Files from wgetbot (убедитесь, что они не загружаются)
+wgetbot*
+!wgetbot/  # если это папка, раскомментируйте
+
+# OS
+Thumbs.db

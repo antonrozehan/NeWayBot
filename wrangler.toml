@@ -1,0 +1,7 @@
+name = "work-bot"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+BOT_TOKEN = "Y8031049269:AAFIN4EyETxaku0BM0ovyi77uTbI6VeYlmM"
+ADMIN_ID = "698852905"
