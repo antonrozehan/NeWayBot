@@ -40,7 +40,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📅 Текущая неделя: <b>{current_week}</b>\n"
             f"📅 Следующая неделя: <b>{next_week}</b>\n\n"
             f"{format_info('Выберите действие в меню ниже')}\n\n"
-            f"💡 <i>Кнопки всегда под рукой</i>"
+            "💡 <i>Кнопки всегда под рукой</i>"
         )
     else:
         keyboard = get_main_reply_keyboard()
@@ -54,12 +54,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if not has_schedule:
             welcome += f"{format_info('Вы ещё не отправили график')}\n"
-            welcome += f"💡 <i>Нажмите «📝 Отправить график»</i>\n\n"
+            welcome += "💡 <i>Нажмите «📝 Отправить график»</i>\n\n"
         else:
             welcome += f"{format_success('График уже отправлен')}\n"
-            welcome += f"💡 <i>Можно изменить в любое время</i>\n\n"
+            welcome += "⚠️ <i>Можно изменить только один раз</i>\n\n"
         
-        welcome += f"💡 <i>График можно отправить в любой день</i>"
+        welcome += (
+            "📅 <b>График можно отправить только:</b>\n"
+            "• Пятница — весь день\n"
+            "• Суббота — весь день\n"
+            "• Воскресенье — до 10:00\n\n"
+            "⚠️ <b>Отправить — 1 раз, изменить — тоже только 1 раз</b>"
+        )
     
     await update.message.reply_text(
         welcome,
@@ -94,6 +100,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "  └ Поиск свободных сотрудников\n\n"
             "📈 <b>Статистика</b>\n"
             "  └ Статистика отправок\n\n"
+            "🧹 <b>Очистить графики</b>\n"
+            "  └ Удалить все графики официантов (с подтверждением)\n\n"
             f"{format_info('Используйте кнопки внизу')}"
         )
     else:
@@ -102,10 +110,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📌 <b>Dostępne akcje:</b>\n\n"
             "📝 <b>Wyślij grafik</b>\n"
             "  └ Podaj dni i godziny pracy\n\n"
-            "✏️ <b>Zmień grafik</b>\n"
-            "  └ Zaktualizuj swój grafik\n\n"
             "📋 <b>Mój grafik</b>\n"
             "  └ Sprawdź swój grafik\n\n"
+            "📅 <b>График можно отправить только:</b>\n"
+            "• Пятница — весь день\n"
+            "• Суббота — весь день\n"
+            "• Воскресенье — до 10:00\n\n"
+            "⚠️ <b>Отправить — 1 раз, изменить — тоже только 1 раз</b>\n\n"
             f"{format_info('Przykład grafiku:')}\n"
             "<code>Poniedziałek: cały dzień</code>\n"
             "<code>Wtorek: od 10:00</code>\n"

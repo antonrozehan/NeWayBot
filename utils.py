@@ -1,56 +1,264 @@
-import re
 from datetime import datetime, timedelta
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+
+# ========== ФУНКЦИИ ДАТ ==========
 
 def get_current_week_start():
+    """Возвращает дату начала текущей недели (понедельник)"""
     today = datetime.now().date()
     monday = today - timedelta(days=today.weekday())
-    return monday
+    return monday.strftime("%d.%m.%Y")
 
 def get_current_week_end():
-    monday = get_current_week_start()
+    """Возвращает дату окончания текущей недели (воскресенье)"""
+    today = datetime.now().date()
+    monday = today - timedelta(days=today.weekday())
     sunday = monday + timedelta(days=6)
-    return sunday
+    return sunday.strftime("%d.%m.%Y")
 
 def get_next_week_start():
-    current_monday = get_current_week_start()
-    next_monday = current_monday + timedelta(days=7)
-    return next_monday
+    """Возвращает дату начала следующей недели (понедельник)"""
+    today = datetime.now().date()
+    monday = today - timedelta(days=today.weekday())
+    next_monday = monday + timedelta(days=7)
+    return next_monday.strftime("%d.%m.%Y")
 
 def get_next_week_end():
-    next_monday = get_next_week_start()
+    """Возвращает дату окончания следующей недели (воскресенье)"""
+    today = datetime.now().date()
+    monday = today - timedelta(days=today.weekday())
+    next_monday = monday + timedelta(days=7)
     next_sunday = next_monday + timedelta(days=6)
-    return next_sunday
-
-def format_week(start_date, end_date):
-    return f"{start_date.strftime('%d.%m')} - {end_date.strftime('%d.%m.%Y')}"
-
-def get_week_range_text():
-    start = get_next_week_start()
-    end = get_next_week_end()
-    return f"{start.strftime('%d.%m')} - {end.strftime('%d.%m.%Y')}"
+    return next_sunday.strftime("%d.%m.%Y")
 
 def get_week_start_str():
-    return get_next_week_start().strftime("%Y-%m-%d")
+    """Возвращает дату начала следующей недели в формате YYYY-MM-DD для БД"""
+    today = datetime.now().date()
+    monday = today - timedelta(days=today.weekday())
+    next_monday = monday + timedelta(days=7)
+    return next_monday.strftime("%Y-%m-%d")
 
-def get_current_week_range_text():
-    start = get_current_week_start()
-    end = get_current_week_end()
-    return f"{start.strftime('%d.%m')} - {end.strftime('%d.%m.%Y')}"
+def get_week_range_text():
+    """Возвращает текстовое представление диапазона следующей недели"""
+    start = get_next_week_start()
+    end = get_next_week_end()
+    return f"{start} - {end}"
 
-def can_submit_schedule():
-    return True
+def format_week(start, end):
+    """Форматирует неделю в читаемый вид"""
+    return f"{start} - {end}"
 
-def get_days_until_friday():
-    today = datetime.now().weekday()
-    if today == 6:
-        return 5
-    elif today == 0:
-        return 4
-    elif today == 1:
-        return 3
-    elif today == 2:
-        return 2
-    elif today == 3:
-        return 1
+# ========== КЛАВИАТУРЫ ==========
+
+def get_main_reply_keyboard():
+    """Клавиатура для обычных пользователей"""
+    keyboard = [
+        ["📝 Отправить график", "✏️ Изменить график"],
+        ["📋 Мой график"],
+        ["❓ Помощь"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_admin_reply_keyboard():
+    """Клавиатура для администратора"""
+    keyboard = [
+        ["📊 Все графики", "📁 Excel-отчет"],
+        ["📤 Рассылка", "✏️ Редактировать график"],
+        ["🔍 Свободные", "📋 Не назначенные"],
+        ["📈 Статистика"],
+        ["❓ Помощь"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_main_menu_inline():
+    """Инлайн-кнопка для возврата в главное меню"""
+    keyboard = [
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_shift_confirmation_keyboard(shift_id):
+    """Клавиатура для подтверждения/отказа от смены"""
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Подтвердить", callback_data=f"confirm_shift_{shift_id}"),
+            InlineKeyboardButton("❌ Отказаться", callback_data=f"decline_shift_{shift_id}")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+# ========== ФУНКЦИИ ДЛЯ ФОРМАТИРОВАНИЯ ==========
+
+def format_header(text, icon="📋"):
+    """Форматирует заголовок"""
+    return f"{icon} <b>{text}</b>\n─────────────────────\n\n"
+
+def format_info(text):
+    """Форматирует информационное сообщение"""
+    return f"ℹ️ {text}\n"
+
+def format_success(text):
+    """Форматирует сообщение об успехе"""
+    return f"✅ {text}\n"
+
+def format_error(text):
+    """Форматирует сообщение об ошибке"""
+    return f"❌ {text}\n"
+
+def format_warning(text):
+    """Форматирует предупреждение"""
+    return f"⚠️ {text}\n"
+
+# ========== ФУНКЦИИ ДЛЯ ПАРСИНГА ==========
+
+def parse_shift_input(text):
+    """
+    Парсинг ввода смены.
+    Формат: Hotel Sofitel Śniadania 19.08.2026(16:00-4:00)
+    """
+    import re
+    pattern = r'^(.+?)\s+(\d{2}\.\d{2}\.\d{4})\((\d{1,2}:\d{2})-(\d{1,2}:\d{2})\)$'
+    match = re.match(pattern, text.strip())
+    
+    if match:
+        return {
+            'hotel': match.group(1).strip(),
+            'date': match.group(2).strip(),
+            'time_start': match.group(3).strip(),
+            'time_end': match.group(4).strip()
+        }
+    return None
+
+def parse_schedule_line(line):
+    """
+    Парсинг строки графика.
+    Формат: Poniedziałek: cały dzień
+    """
+    import re
+    # Ищем день недели
+    days = ['Poniedziałek', 'Wtorek', 'Środa', 'Czwartek', 'Piątek', 'Sobota', 'Niedziela']
+    days_ru = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+    all_days = days + days_ru
+    
+    for day in all_days:
+        if day.lower() in line.lower():
+            # Извлекаем информацию после дня
+            parts = line.split(':', 1)
+            if len(parts) > 1:
+                info = parts[1].strip()
+            else:
+                info = line.replace(day, '').strip()
+            
+            return {
+                'day': day,
+                'info': info if info else 'cały dzień'
+            }
+    return None
+
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+
+def get_days_order():
+    """Возвращает порядок дней недели"""
+    return ['Poniedziałek', 'Wtorek', 'Środa', 'Czwartek', 'Piątek', 'Sobota', 'Niedziela']
+
+def get_day_date(day_name, week_start_str):
+    """
+    Получает дату для дня недели
+    week_start_str - дата понедельника в формате YYYY-MM-DD
+    """
+    from datetime import datetime, timedelta
+    
+    days_order = get_days_order()
+    week_start = datetime.strptime(week_start_str, "%Y-%m-%d").date()
+    
+    for i, day in enumerate(days_order):
+        if day.lower() == day_name.lower():
+            date_obj = week_start + timedelta(days=i)
+            return date_obj.strftime("%d.%m.%Y")
+    return None
+
+def is_free_day(text):
+    """Проверяет, является ли день выходным"""
+    free_words = ['wolne', 'nie mogę', 'выходной', 'не могу', 'off', 'free', 'wolny']
+    return any(word in text.lower() for word in free_words)
+
+def extract_time_info(text):
+    """Извлекает информацию о времени из текста"""
+    import re
+    
+    time_from = ""
+    time_to = ""
+    
+    # Ищем "od HH:MM"
+    od_match = re.search(r'od\s*(\d{1,2}:\d{2})', text, re.IGNORECASE)
+    if od_match:
+        time_from = od_match.group(1)
+    
+    # Ищем "do HH:MM"
+    do_match = re.search(r'do\s*(\d{1,2}:\d{2})', text, re.IGNORECASE)
+    if do_match:
+        time_to = do_match.group(1)
+    
+    # Ищем "HH:MM-HH:MM"
+    range_match = re.search(r'(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})', text)
+    if range_match:
+        time_from = range_match.group(1)
+        time_to = range_match.group(2)
+    
+    # Проверяем на "cały dzień"
+    if 'cały dzień' in text.lower() or 'caly dzien' in text.lower():
+        return {
+            'from': 'od rana',
+            'to': 'do wieczora',
+            'display': 'cały dzień'
+        }
+    
+    if time_from and time_to:
+        display = f"od {time_from} do {time_to}"
+    elif time_from:
+        display = f"od {time_from}"
+    elif time_to:
+        display = f"do {time_to}"
     else:
-        return 0
+        display = text if text else "cały dzień"
+    
+    return {
+        'from': time_from,
+        'to': time_to,
+        'display': display
+    }
+
+def get_day_pl_from_date(date_str):
+    """Получает название дня недели на польском из даты"""
+    from datetime import datetime
+    
+    days_pl = {
+        'Monday': 'Poniedziałek',
+        'Tuesday': 'Wtorek',
+        'Wednesday': 'Środa',
+        'Thursday': 'Czwartek',
+        'Friday': 'Piątek',
+        'Saturday': 'Sobota',
+        'Sunday': 'Niedziela'
+    }
+    
+    try:
+        date_obj = datetime.strptime(date_str, "%d.%m.%Y")
+        day_name = date_obj.strftime("%A")
+        return days_pl.get(day_name, day_name)
+    except:
+        return date_str
+
+def get_week_dates(week_start_str):
+    """Получает даты для всех дней недели"""
+    from datetime import datetime, timedelta
+    
+    days_order = get_days_order()
+    week_start = datetime.strptime(week_start_str, "%Y-%m-%d").date()
+    
+    dates = {}
+    for i, day in enumerate(days_order):
+        date_obj = week_start + timedelta(days=i)
+        dates[day] = date_obj.strftime("%d.%m.%Y")
+    
+    return dates

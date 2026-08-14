@@ -14,6 +14,9 @@ from formatters import *
 from utils import *
 from templates import get_empty_schedule_template, get_example_schedule, get_schedule_instruction
 
+# Тестовая группа (временный ID)
+GROUP_CHAT_ID = -5056870971
+
 # Настройка логирования
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -29,6 +32,52 @@ not_assigned_exporter = NotAssignedExporter()
 # Хранилище состояний
 user_states = {}
 temp_data = {}
+def get_admin_reply_keyboard():
+    buttons = [
+        ["📊 Все графики", "📁 Excel-отчет"],
+        ["📤 Рассылка", "🔍 Свободные"],
+        ["🧹 Очистить графики", "📋 Не назначенные"],
+        ["✏️ Редактировать график"]
+    ]
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+
+def is_schedule_submission_allowed() -> bool:
+    """
+    Для официанта: отправить / изменить график только
+    - Пятница (весь день)
+    - Суббота (весь день)
+    Воскресенье и будни — запрещено.
+    """
+    return datetime.now().weekday() in (4, 5)  # 4=пт, 5=сб
+
+def get_submission_window_text() -> str:
+    """Текст окна приёма графиков"""
+    return (
+        "📅 <b>График можно отправить / изменить только:</b>\n"
+        "• Пятница — весь день\n"
+        "• Суббота — весь день\n\n"
+        "🚫 В воскресенье и в будни — нельзя\n"
+        "⚠️ <b>Отправить — 1 раз, изменить — тоже только 1 раз</b>"
+    )
+
+def ensure_excel_path(week_start: str = None) -> str:
+    """Гарантирует, что у excel_exporter есть валидный file_path"""
+    path = getattr(excel_exporter, 'file_path', None)
+    if path:
+        return path
+    if not week_start:
+        try:
+            week_start = get_week_start_str()
+        except Exception:
+            week_start = datetime.now().strftime("%Y-%m-%d")
+    base_dir = "/tmp/bot_files" if os.name != "nt" else os.path.join(os.getcwd(), "bot_files")
+    os.makedirs(base_dir, exist_ok=True)
+    path = os.path.join(base_dir, f"schedules_{week_start}.xlsx")
+    try:
+        excel_exporter.file_path = path
+    except Exception:
+        pass
+    return path
 
 # ========== ОСНОВНЫЕ ФУНКЦИИ ==========
 
@@ -60,7 +109,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         keyboard = get_main_reply_keyboard()
         
-        has_schedule = await db.get_user_schedule(user.id) is not None
+        _sch = await db.get_user_schedule(user.id)
+        has_schedule = _sch is not None and str(_sch).strip() != ""
         
         welcome = (
             "👋 <b>Witaj!</b>\n\n"
@@ -73,9 +123,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             welcome += "💡 <i>Нажмите «📝 Отправить график»</i>\n\n"
         else:
             welcome += f"{format_success('График уже отправлен')}\n"
-            welcome += "💡 <i>Можно изменить в любое время</i>\n\n"
+            welcome += "⚠️ <i>Можно изменить только один раз</i>\n\n"
         
-        welcome += "💡 <i>График можно отправить в любой день</i>"
+        welcome += get_submission_window_text()
     
     await update.message.reply_text(
         welcome,
@@ -121,6 +171,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "  └ Поиск свободных сотрудников\n\n"
             "📈 <b>Статистика</b>\n"
             "  └ Статистика отправок\n\n"
+            "🧹 <b>Очистить графики</b>\n"
+            "  └ Удалить все графики официантов (с подтверждением)\n\n"
+            "🔄 <b>/restart</b>\n"
+            "  └ Перезапустить бота\n\n"
             f"{format_info('Используйте кнопки внизу')}"
         )
     else:
@@ -129,10 +183,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📌 <b>Dostępne akcje:</b>\n\n"
             "📝 <b>Wyślij grafik</b>\n"
             "  └ Podaj dni i godziny pracy\n\n"
-            "✏️ <b>Zmień grafik</b>\n"
-            "  └ Zaktualizuj swój grafik\n\n"
             "📋 <b>Mój grafik</b>\n"
             "  └ Sprawdź swój grafik\n\n"
+            f"{get_submission_window_text()}\n\n"
             f"{format_info('Przykład grafiku:')}\n"
             "<code>Poniedziałek: cały dzień</code>\n"
             "<code>Wtorek: od 10:00</code>\n"
@@ -142,53 +195,75 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text, parse_mode='HTML')
 
+async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Перезапуск бота (только админ)"""
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text(
+            f"{format_error('Доступ запрещен')}",
+            parse_mode='HTML'
+        )
+        return
+    
+    await update.message.reply_text(
+        f"{format_header('Перезапуск', '🔄')}"
+        "⏳ <b>Бот перезагружается...</b>\n\n"
+        f"{format_info('Через несколько секунд бот снова будет онлайн')}\n"
+        "💡 <i>Напишите /start после перезапуска</i>",
+        parse_mode='HTML'
+    )
+    
+    logger.info(f"Админ {user_id} запросил /restart")
+    
+    # Небольшая пауза, чтобы сообщение успело уйти
+    await asyncio.sleep(1)
+    
+    try:
+        # Перезапуск текущего процесса
+        python = sys.executable
+        os.execv(python, [python] + sys.argv)
+    except Exception as e:
+        logger.error(f"Ошибка перезапуска: {e}")
+        # Fallback: просто выходим — если бот под supervisor/systemd/Render, он поднимется сам
+        os._exit(0)
+
 # ========== НАПОМИНАНИЕ ОБ ОТПРАВКЕ ГРАФИКА ==========
 
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
-    today = datetime.now().weekday()
-    
-    if today == 4:
-        text = (
-            "📢 <b>PRZYPOMNIENIE!</b>\n\n"
-            f"📅 Następny tydzień: <b>{get_week_range_text()}</b>\n\n"
-            f"{format_info('Czas wysłać swój grafik pracy!')}\n"
-            "💡 <i>Naciśnij «📝 Отправить график»</i>\n\n"
-            "💡 <i>График можно отправить в любой день</i>"
-        )
-    elif today == 5:
-        text = (
-            "⏰ <b>PRZYPOMNIENIE!</b>\n\n"
-            f"📅 Następny tydzień: <b>{get_week_range_text()}</b>\n\n"
-            f"{format_info('Nie zapomnij wysłać swojego grafiku!')}\n"
-            "💡 <i>Naciśnij «📝 Отправить график»</i>\n\n"
-            "💡 <i>График можно отправить в любой день</i>"
-        )
-    else:
+    """Напоминание в группу: только пятница и суббота, каждые 6 часов"""
+    today = datetime.now().weekday()  # 4=пт, 5=сб
+    if today not in (4, 5):
         return
     
-    all_users = await db.get_all_users()
+    text = (
+        "📢 <b>PRZYPOMNIENIE!</b>\n\n"
+        f"📅 Następny tydzień: <b>{get_week_range_text()}</b>\n\n"
+        f"{format_info('Czas wysłać swój grafik pracy!')}\n"
+        "💡 <i>Naciśnij «📝 Отправить график»</i>\n\n"
+        f"{get_submission_window_text()}"
+    )
     
-    for user in all_users:
-        try:
-            has_schedule = await db.get_user_schedule(user['user_id']) is not None
-            if not has_schedule:
-                await context.bot.send_message(
-                    chat_id=user['user_id'],
-                    text=text,
-                    parse_mode='HTML'
-                )
-                await asyncio.sleep(0.5)
-        except Exception as e:
-            logger.error(f"Ошибка отправки напоминания {user['user_id']}: {e}")
+    try:
+        await context.bot.send_message(
+            chat_id=GROUP_CHAT_ID,
+            text=text,
+            parse_mode='HTML'
+        )
+        logger.info(f"Напоминание отправлено в группу {GROUP_CHAT_ID} (день={today})")
+    except Exception as e:
+        logger.error(f"Ошибка отправки напоминания в группу {GROUP_CHAT_ID}: {e}")
 
 # ========== ОБРАБОТЧИКИ ==========
 
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    try:
+        await query.answer()
+    except Exception:
+        pass  # кнопка устарела / уже нажата — не падаем
     
     user_id = query.from_user.id
-    data = query.data
+    data = query.data or ""
     
     if data == "main_menu":
         is_admin = user_id == ADMIN_ID
@@ -201,6 +276,173 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text=f"{format_header('Главное меню', '🏠')}",
             parse_mode='HTML',
             reply_markup=keyboard
+        )
+        return
+    
+    # ========== ПОДТВЕРЖДЕНИЕ ОЧИСТКИ ГРАФИКОВ ==========
+    if data == "confirm_clear_schedules":
+        if user_id != ADMIN_ID:
+            await query.edit_message_text(
+                f"{format_error('Доступ запрещен')}",
+                parse_mode='HTML'
+            )
+            return
+        
+        try:
+            week_start = get_week_start_str()
+            cleared_tables = []
+            
+            # ========== ПОЛНАЯ ОЧИСТКА ТАБЛИЦ ==========
+            tables = ['users', 'user_schedules', 'user_shifts', 'assigned_shifts']
+            
+            # Способ 1: специальный метод в Database
+            if hasattr(db, 'clear_all_data'):
+                await db.clear_all_data()
+                cleared_tables = tables[:]
+            elif hasattr(db, 'wipe_all'):
+                await db.wipe_all()
+                cleared_tables = tables[:]
+            else:
+                # Способ 2: очистка каждой таблицы через execute / raw SQL
+                for table in tables:
+                    ok = False
+                    # Метод вида clear_users, clear_user_schedules...
+                    method_name = f"clear_{table}"
+                    if hasattr(db, method_name):
+                        try:
+                            await getattr(db, method_name)()
+                            ok = True
+                        except Exception as e:
+                            logger.error(f"{method_name}: {e}")
+                    
+                    # delete_all_* 
+                    if not ok and hasattr(db, f"delete_all_{table}"):
+                        try:
+                            await getattr(db, f"delete_all_{table}")()
+                            ok = True
+                        except Exception as e:
+                            logger.error(f"delete_all_{table}: {e}")
+                    
+                    # Прямой SQL через db.conn / db.db / db.execute
+                    if not ok:
+                        for attr in ('execute', 'conn', 'db', 'connection'):
+                            obj = getattr(db, attr, None)
+                            if obj is None:
+                                continue
+                            try:
+                                sql = f"DELETE FROM {table}"
+                                if callable(obj):
+                                    result = obj(sql)
+                                    if asyncio.iscoroutine(result):
+                                        await result
+                                elif hasattr(obj, 'execute'):
+                                    result = obj.execute(sql)
+                                    if asyncio.iscoroutine(result):
+                                        await result
+                                    if hasattr(obj, 'commit'):
+                                        commit = obj.commit()
+                                        if asyncio.iscoroutine(commit):
+                                            await commit
+                                ok = True
+                                break
+                            except Exception as e:
+                                logger.error(f"SQL {table} via {attr}: {e}")
+                    
+                    if ok:
+                        cleared_tables.append(table)
+                        logger.info(f"Очищена таблица: {table}")
+                
+                # Дополнительно: clear_assigned_shifts_for_week
+                try:
+                    await db.clear_assigned_shifts_for_week(week_start)
+                    if 'assigned_shifts' not in cleared_tables:
+                        cleared_tables.append('assigned_shifts')
+                except Exception as e:
+                    logger.error(f"clear_assigned_shifts_for_week: {e}")
+            
+            # Сбрасываем все временные флаги в боте
+            temp_data.clear()
+            user_states.clear()
+            
+            # Очищаем Excel-файлы на диске
+            files_deleted = 0
+            folders_to_clean = [
+                "/tmp/bot_files",
+                "bot_files",
+                "exports",
+                "files",
+                ".",
+            ]
+            if hasattr(excel_exporter, 'file_path') and excel_exporter.file_path:
+                parent = os.path.dirname(excel_exporter.file_path)
+                if parent:
+                    folders_to_clean.append(parent)
+            if hasattr(excel_exporter, 'output_dir') and excel_exporter.output_dir:
+                folders_to_clean.append(excel_exporter.output_dir)
+            
+            for folder in folders_to_clean:
+                if not folder or not os.path.isdir(folder):
+                    continue
+                try:
+                    for name in os.listdir(folder):
+                        if name.endswith(('.xlsx', '.xls', '.csv')):
+                            path = os.path.join(folder, name)
+                            try:
+                                os.remove(path)
+                                files_deleted += 1
+                                logger.info(f"Удалён файл: {path}")
+                            except Exception as e:
+                                logger.error(f"Не удалось удалить {path}: {e}")
+                except Exception as e:
+                    logger.error(f"Ошибка очистки папки {folder}: {e}")
+            
+            # Не обнуляем file_path — иначе падает not_assigned_exporter
+            # Файлы уже удалены с диска, при следующем экспорте создадутся заново
+            
+            # Формируем отчёт
+            report_lines = []
+            for t in ['users', 'user_schedules', 'user_shifts', 'assigned_shifts']:
+                if t in cleared_tables:
+                    report_lines.append(f"✅ Очищена таблица: <code>{t}</code>")
+                else:
+                    report_lines.append(f"⚠️ Не удалось очистить: <code>{t}</code>")
+            
+            all_ok = len(cleared_tables) >= 3  # хотя бы основные
+            
+            if all_ok:
+                result_msg = (
+                    f"{format_success('ВСЕ ДАННЫЕ УСПЕШНО ОЧИЩЕНЫ!')}\n\n"
+                    + "\n".join(report_lines) + "\n\n"
+                    f"✅ Excel-файлы удалены: {files_deleted}\n"
+                    f"✅ Состояния бота сброшены\n\n"
+                    f"📅 Неделя: <b>{get_week_range_text()}</b>\n\n"
+                    f"{format_info('Бот готов принимать новые графики')}"
+                )
+            else:
+                result_msg = (
+                    f"{format_warning('Очистка частичная')}\n\n"
+                    + "\n".join(report_lines) + "\n\n"
+                    f"Excel-файлов удалено: {files_deleted}\n\n"
+                    f"{format_info('Пришли database.py — сделаю 100% очистку')}"
+                )
+            
+            await query.edit_message_text(result_msg, parse_mode='HTML')
+            logger.info(f"Очистка таблиц: {cleared_tables}, files={files_deleted}")
+        except Exception as e:
+            logger.error(f"Ошибка очистки графиков: {e}")
+            import traceback
+            traceback.print_exc()
+            await query.edit_message_text(
+                f"{format_error('Ошибка при очистке')}\n\n{str(e)}",
+                parse_mode='HTML'
+            )
+        return
+    
+    if data == "cancel_clear_schedules":
+        await query.edit_message_text(
+            f"{format_info('Очистка отменена')}\n\n"
+            "Данные не были изменены.",
+            parse_mode='HTML'
         )
         return
     
@@ -322,15 +564,17 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         confirmed_count = await db.get_shift_confirmed_count(shift_id)
         shift_limit = await db.get_shift_limit(shift_id)
         
-        is_full = shift_limit and confirmed_count >= shift_limit
+        is_full = bool(shift_limit) and confirmed_count >= shift_limit
+        limit_text = str(shift_limit) if shift_limit else "∞"
+        left_text = str(shift_limit - confirmed_count) if shift_limit else "∞"
         
         await query.edit_message_text(
             f"{format_success('Zmiana potwierdzona!')}\n\n"
             f"📍 <b>{shift['hotel']}</b>\n"
             f"📆 {shift['date']}\n"
             f"⏰ {shift['time_start']}-{shift['time_end']}\n\n"
-            f"👥 <b>Подтверждено:</b> {confirmed_count} из {shift_limit} сотрудников\n"
-            f"{'🎉 <b>Смена полностью укомплектована!</b>' if is_full else 'ℹ️ <i>Осталось мест: ' + str(shift_limit - confirmed_count) + '</i>'}\n\n"
+            f"👥 <b>Подтверждено:</b> {confirmed_count} из {limit_text} сотрудников\n"
+            f"{'🎉 <b>Смена полностью укомплектована!</b>' if is_full else 'ℹ️ <i>Осталось мест: ' + left_text + '</i>'}\n\n"
             f"{format_info('Dziękujemy! Udanej pracy 💪')}",
             parse_mode='HTML'
         )
@@ -453,8 +697,9 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📅 <b>День:</b> {found_day}\n\n"
             f"{format_info('Введите название смены, дату и время:')}\n"
             f"<b>Примеры:</b>\n"
-            f"<code>Hotel Sofitel Śniadania 19.08.2026(16:00-4:00)</code>\n"
-            f"<code>Hotel President Floor 21.08.2026(12:00-22:00)</code>\n\n"
+            f"<code>Sofitel Śniadania 19.08.2026(16:00-04:00)</code>\n"
+            f"<code>Hilton Floor 21.08.2026(12:00-22:00)</code>\n"
+            f"<code>Mercure 21.08.2026(8:00-16:00)</code>\n\n"
             f"{format_info('Или нажмите «Главное меню» для отмены')}",
             parse_mode='HTML',
             reply_markup=get_main_menu_inline()
@@ -478,11 +723,22 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== ОТПРАВИТЬ ГРАФИК ==========
     if text == "📝 Отправить график":
-        has_schedule = await db.get_user_schedule(user_id) is not None
+        if not is_schedule_submission_allowed():
+            await update.message.reply_text(
+                f"{format_error('Сейчас нельзя отправить график')}\n\n"
+                f"{get_submission_window_text()}",
+                parse_mode='HTML',
+                reply_markup=get_main_menu_inline()
+            )
+            return
+
+        _sch = await db.get_user_schedule(user_id)
+        has_schedule = _sch is not None and str(_sch).strip() != ""
         if has_schedule:
             await update.message.reply_text(
-                f"{format_info('Вы уже отправили график')}\n\n"
-                f"{format_info('Используйте «✏️ Изменить график» для обновления')}",
+                f"{format_warning('Вы уже отправили график')}\n\n"
+                "⚠️ <b>Отправить можно только один раз.</b>\n"
+                "✏️ Изменить можно через кнопку «✏️ Изменить график» (тоже только 1 раз)",
                 parse_mode='HTML',
                 reply_markup=get_main_menu_inline()
             )
@@ -495,7 +751,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👤 <b>Wprowadź IMIĘ i NAZWISKO po angielsku:</b>\n"
             "<code>Ivan Ivanov</code>\n\n"
             f"📅 <i>Grafik na tydzień: {get_week_range_text()}</i>\n\n"
-            "💡 <i>График можно отправить в любой день</i>",
+            "⚠️ <b>График можно отправить только один раз!</b>",
             parse_mode='HTML',
             reply_markup=get_main_menu_inline()
         )
@@ -538,12 +794,31 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== ИЗМЕНИТЬ ГРАФИК (СОТРУДНИК) ==========
     if text == "✏️ Изменить график":
+        if not is_schedule_submission_allowed():
+            await update.message.reply_text(
+                f"{format_error('Сейчас нельзя изменить график')}\n\n"
+                f"{get_submission_window_text()}",
+                parse_mode='HTML',
+                reply_markup=get_main_menu_inline()
+            )
+            return
+
         schedule = await db.get_user_schedule(user_id)
         if not schedule:
             await update.message.reply_text(
                 f"{format_error('Nie masz zapisanego grafiku')}\n\n"
                 f"{format_info('Najpierw wyślij swój grafik')}\n"
                 "💡 <i>Użyj przycisku «📝 Отправить график»</i>",
+                parse_mode='HTML',
+                reply_markup=get_main_menu_inline()
+            )
+            return
+
+        if temp_data.get(user_id, {}).get("already_edited"):
+            await update.message.reply_text(
+                f"{format_warning('Вы уже изменили график')}\n\n"
+                "⚠️ <b>График можно изменить только один раз!</b>\n\n"
+                f"{format_info('Если нужно исправить ещё раз — обратитесь к администратору')}",
                 parse_mode='HTML',
                 reply_markup=get_main_menu_inline()
             )
@@ -559,6 +834,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{schedule}\n\n"
             f"{format_info('Wyślij NOWY grafik')}\n"
             "───────────────────\n\n"
+            "⚠️ <b>График можно изменить только один раз!</b>\n\n"
             f"{format_info('Wpisz swój grafik według wzoru:')}\n\n"
             "<code>Poniedziałek:</code>\n"
             "<code>Wtorek:</code>\n"
@@ -585,6 +861,17 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== ВВОД ИМЕНИ ==========
     if user_states.get(user_id) == "waiting_name":
+        if not is_schedule_submission_allowed():
+            user_states[user_id] = None
+            temp_data.pop(user_id, None)
+            await update.message.reply_text(
+                f"{format_error('Время приёма графиков закончилось')}\n\n"
+                f"{get_submission_window_text()}",
+                parse_mode='HTML',
+                reply_markup=get_main_reply_keyboard()
+            )
+            return
+
         if not re.match(r'^[A-Za-z\s\-]+$', text.strip()):
             await update.message.reply_text(
                 f"{format_error('Błędny format')}\n\n"
@@ -649,6 +936,17 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== СОХРАНЕНИЕ ГРАФИКА ==========
     if user_states.get(user_id) == "waiting_schedule":
+        if not is_schedule_submission_allowed():
+            user_states[user_id] = None
+            temp_data.pop(user_id, None)
+            await update.message.reply_text(
+                f"{format_error('Время приёма графиков закончилось')}\n\n"
+                f"{get_submission_window_text()}",
+                parse_mode='HTML',
+                reply_markup=get_main_reply_keyboard()
+            )
+            return
+
         if len(text.strip()) < 3:
             await update.message.reply_text(
                 f"{format_error('Grafik jest za krótki')}\n\n"
@@ -686,7 +984,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📅 <b>{get_week_range_text()}</b>\n\n"
             f"{format_info('Dane dodane do tabeli Excel')}\n"
             f"{format_info('Oczekuj na gotowy grafik od menedżera')}\n\n"
-            f"{format_info('График можно изменить в любое время')}",
+            "⚠️ <b>Отправить можно только один раз. Изменить — тоже только один раз.</b>",
             parse_mode='HTML',
             reply_markup=get_main_reply_keyboard()
         )
@@ -694,6 +992,16 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== РЕДАКТИРОВАНИЕ ГРАФИКА (СОТРУДНИК) ==========
     if user_states.get(user_id) == "waiting_edit_schedule":
+        if not is_schedule_submission_allowed():
+            user_states[user_id] = None
+            await update.message.reply_text(
+                f"{format_error('Время приёма графиков закончилось')}\n\n"
+                f"{get_submission_window_text()}",
+                parse_mode='HTML',
+                reply_markup=get_main_reply_keyboard()
+            )
+            return
+
         if len(text.strip()) < 3:
             await update.message.reply_text(
                 f"{format_error('Grafik jest za krótki')}\n\n"
@@ -710,6 +1018,11 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if username:
             await db.update_username(user_id, username)
         
+        # Помечаем, что график уже был изменён (один раз)
+        if user_id not in temp_data:
+            temp_data[user_id] = {}
+        temp_data[user_id]["already_edited"] = True
+        
         await context.bot.send_message(
             chat_id=ADMIN_ID,
             text=(
@@ -721,13 +1034,13 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📋 <b>Новый график:</b>\n"
                 f"{text}\n\n"
                 "🔄 <i>Старый график удален</i>\n"
-                "✅ <i>Новый график сохранен</i>"
+                "✅ <i>Новый график сохранен</i>\n"
+                "⚠️ <i>Это было единственное разрешённое изменение</i>"
             ),
             parse_mode='HTML'
         )
         
         user_states[user_id] = None
-        temp_data.pop(user_id, None)
         
         await update.message.reply_text(
             "✅ <b>ГРАФИК ИЗМЕНЕН!</b>\n\n"
@@ -735,7 +1048,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📋 <b>Новый график:</b>\n"
             f"{text}\n\n"
             "ℹ️ <b>Уведомление отправлено менеджеру</b>\n"
-            "ℹ️ <b>Таблица Excel обновлена</b>",
+            "ℹ️ <b>Таблица Excel обновлена</b>\n\n"
+            "⚠️ <b>График можно изменить только один раз!</b>",
             parse_mode='HTML',
             reply_markup=get_main_reply_keyboard()
         )
@@ -794,6 +1108,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         week_start = get_week_start_str()
+        ensure_excel_path(week_start)
         excel_path = excel_exporter.export_schedules_to_excel(schedules, week_start)
         
         try:
@@ -938,10 +1253,11 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if not_assigned:
             try:
+                base_path = ensure_excel_path(week_start)
                 excel_path = not_assigned_exporter.export_not_assigned_to_excel(
                     not_assigned, 
                     week_start, 
-                    excel_exporter.file_path
+                    base_path
                 )
                 with open(excel_path, 'rb') as f:
                     await context.bot.send_document(
@@ -1032,11 +1348,18 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"{current_schedule}\n"
             f"{format_info('Введите НОВЫЙ график в формате:')}\n"
-            "<code>Hotel 20.08.2026(08:00-16:00) - Ivan Ivanov</code>\n\n"
-            "<b>Пример с Śniadania:</b>\n"
-            "<code>Hotel Sofitel Śniadania 19.08.2026(16:00-4:00) - Anton Rozegan</code>\n\n"
-            "<b>Пример с Floor:</b>\n"
-            "<code>Hotel President Floor 21.08.2026(12:00-22:00) - Ivan Ivanov</code>\n\n"
+            "<code>Hotel: President\n"
+            "20.08.2026\n"
+            "08:00-12:00\n"
+            "Anton Rozehan\n\n"
+            "21.08.2026\n"
+            "08:00-12:00\n"
+            "Anton Rozehan\n"
+            "Alex\n\n"
+            "22.08.2026\n"
+            "08:00-12:00\n"
+            "Anton Rozehan\n"
+            "Alex</code>\n\n"
             f"{format_info('Или нажмите «Главное меню» для отмены')}",
             parse_mode='HTML',
             reply_markup=get_main_menu_inline()
@@ -1085,6 +1408,34 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text_msg,
             parse_mode='HTML',
             reply_markup=get_admin_reply_keyboard()
+        )
+        return
+    
+    # ========== ОЧИСТКА ГРАФИКОВ (С ПОДТВЕРЖДЕНИЕМ) ==========
+    if text == "🧹 Очистить графики":
+        if user_id != ADMIN_ID:
+            await update.message.reply_text(
+                f"{format_error('Доступ запрещен')}",
+                parse_mode='HTML'
+            )
+            return
+        
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Да, очистить", callback_data="confirm_clear_schedules"),
+                InlineKeyboardButton("❌ Нет, отмена", callback_data="cancel_clear_schedules")
+            ]
+        ])
+        
+        await update.message.reply_text(
+            f"{format_header('Подтверждение очистки', '🧹')}"
+            "⚠️ <b>Вы точно хотите очистить ВСЕ графики официантов?</b>\n\n"
+            "Будет удалено:\n"
+            "• Все отправленные графики сотрудников\n"
+            "• Все назначенные смены на текущую неделю\n\n"
+            "❗️ <b>Это действие нельзя отменить!</b>",
+            parse_mode='HTML',
+            reply_markup=keyboard
         )
         return
     
@@ -1160,9 +1511,10 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👥 <b>Лимит:</b> {limit} сотрудников\n\n"
             f"{format_info('Введите название смены, дату и время:')}\n"
             f"<b>Примеры:</b>\n"
-            f"<code>Hotel Sofitel Śniadania 19.08.2026(16:00-4:00)</code>\n"
-            f"<code>Hotel President Floor 21.08.2026(12:00-22:00)</code>\n"
-            f"<code>Hotel President 21.08.2026(12:00-22:00)</code>\n\n"
+            f"<code>Sofitel Śniadania 19.08.2026(16:00-04:00)</code>\n"
+            f"<code>Hilton Floor 21.08.2026(12:00-22:00)</code>\n"
+            f"<code>Mercure 21.08.2026(8:00-16:00)</code>\n"
+            f"<code>Novotel centrum 22.08.2026(10:00-18:00)</code>\n\n"
             f"{format_info('Или нажмите «Главное меню» для отмены')}",
             parse_mode='HTML',
             reply_markup=get_main_menu_inline()
@@ -1347,6 +1699,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     result_text += f"   ✅ <i>Уже назначен на {found_date}</i>\n"
                 result_text += "\n"
             
+            ensure_excel_path(week_start)
             excel_path = excel_exporter.export_free_employees_to_excel(all_employees, f"{found_day}_all", week_start)
             try:
                 with open(excel_path, 'rb') as f:
@@ -1410,16 +1763,18 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_id != ADMIN_ID:
             return
         
-        shift_pattern = r'^(.+?)\s+(\d{2}\.\d{2}\.\d{4})\((\d{2}:\d{2})-(\d{2}:\d{2})\)$'
+        # \d{1,2} — работает 4:00 и 04:00; любые отели (Sofitel, Hilton, Mercure...)
+        shift_pattern = r'^(.+?)\s+(\d{1,2}\.\d{1,2}\.\d{4})\s*\(\s*(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})\s*\)$'
         shift_match = re.match(shift_pattern, text.strip())
         
         if not shift_match:
             await update.message.reply_text(
                 f"{format_error('Nie udało się rozpoznać zmiany')}\n\n"
                 f"{format_info('Sprawdź format:')}\n"
-                f"<code>Hotel Sofitel Śniadania 19.08.2026(16:00-4:00)</code>\n"
-                f"<code>Hotel President Floor 21.08.2026(12:00-22:00)</code>\n"
-                f"<code>Hotel President 21.08.2026(12:00-22:00)</code>",
+                f"<code>Sofitel Śniadania 19.08.2026(16:00-04:00)</code>\n"
+                f"<code>Hilton Floor 21.08.2026(12:00-22:00)</code>\n"
+                f"<code>Mercure 21.08.2026(8:00-16:00)</code>\n"
+                f"<code>Novotel centrum 22.08.2026(10:00-18:00)</code>",
                 parse_mode='HTML',
                 reply_markup=get_main_menu_inline()
             )
@@ -1502,16 +1857,17 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_id != ADMIN_ID:
             return
         
-        shift_pattern = r'^(.+?)\s+(\d{2}\.\d{2}\.\d{4})\((\d{2}:\d{2})-(\d{2}:\d{2})\)$'
+        shift_pattern = r'^(.+?)\s+(\d{1,2}\.\d{1,2}\.\d{4})\s*\(\s*(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})\s*\)$'
         shift_match = re.match(shift_pattern, text.strip())
         
         if not shift_match:
             await update.message.reply_text(
                 f"{format_error('Nie udało się rozpoznać zmiany')}\n\n"
                 f"{format_info('Sprawdź format:')}\n"
-                f"<code>Hotel Sofitel Śniadania 19.08.2026(16:00-4:00)</code>\n"
-                f"<code>Hotel President Floor 21.08.2026(12:00-22:00)</code>\n"
-                f"<code>Hotel President 21.08.2026(12:00-22:00)</code>",
+                f"<code>Sofitel Śniadania 19.08.2026(16:00-04:00)</code>\n"
+                f"<code>Hilton Floor 21.08.2026(12:00-22:00)</code>\n"
+                f"<code>Mercure 21.08.2026(8:00-16:00)</code>\n"
+                f"<code>Novotel centrum 22.08.2026(10:00-18:00)</code>",
                 parse_mode='HTML',
                 reply_markup=get_main_menu_inline()
             )
@@ -1867,8 +2223,15 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def parse_schedule_text(text):
     """
     Парсинг графика. Поддерживает два формата:
-    1. Hotel 20.08.2026(08:00-16:00) - Ivan Ivanov
-    2. Hotel: / 20.07.2026 / 08:00-12:00 / Ivan Ivanov
+    1. Hotel: President
+       20.08.2026
+       08:00-12:00
+       Anton Rozehan
+       
+       21.08.2026
+       08:00-12:00
+       Anton Rozehan
+       Alex (новый многострочный)
     """
     schedules = {}
     lines = text.strip().split('\n')
@@ -1996,13 +2359,14 @@ def main():
     
     job_queue = application.job_queue
     if job_queue:
-        # Напоминания каждые 6 часов
+        # Напоминания в группу: пт и сб, каждые 6 часов
         job_queue.run_repeating(send_reminder, interval=21600, first=10)
-        print("✅ Напоминания настроены (каждые 6 часов)")
+        print("✅ Напоминания: пт/сб каждые 6 часов → группа -5056870971")
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("id", id_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("restart", restart_command))
     
     application.add_handler(CallbackQueryHandler(handle_buttons))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))

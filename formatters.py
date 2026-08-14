@@ -28,7 +28,7 @@ def get_admin_reply_keyboard():
     buttons = [
         ["📊 Все графики", "📁 Excel-отчет"],
         ["📤 Рассылка", "🔍 Свободные"],
-        ["📈 Статистика", "❓ Помощь"],
+        ["🧹 Очистить графики"],
         ["📋 Не назначенные", "✏️ Редактировать график"]
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
