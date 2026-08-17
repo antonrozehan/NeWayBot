@@ -773,31 +773,66 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== МОЙ ГРАФИК ==========
     if text == "📋 Мой график":
-        schedule = await db.get_user_schedule(user_id)
-        shifts = await db.get_user_shifts(user_id)
+        week_start = get_week_start_str()
+        # Смены от координатора (готовая рассылка)
+        assigned = []
+        if hasattr(db, 'get_assigned_shifts_for_user'):
+            assigned = await db.get_assigned_shifts_for_user(user_id, week_start)
+        else:
+            all_a = await db.get_assigned_shifts_for_week(week_start)
+            assigned = [a for a in all_a if a.get('user_id') == user_id]
         
-        if not schedule and not shifts:
+        # Доп. смены (подтверждение лимита)
+        extra_shifts = await db.get_user_shifts(user_id)
+        # Что официант сам указал как доступность
+        availability = await db.get_user_schedule(user_id)
+        
+        if not assigned and not extra_shifts and not availability:
             await update.message.reply_text(
                 f"{format_header('Mój grafik', '📋')}"
-                f"{format_info('Nie wysłałeś jeszcze grafiku')}\n\n"
-                "💡 <i>Naciśnij «Wyślij grafik»</i>",
+                f"📅 <b>{get_week_range_text()}</b>\n\n"
+                f"{format_info('Na ten tydzień nie ma jeszcze zmian')}\n\n"
+                "💡 <i>Gdy kierownik wyśle grafik — pojawi się tutaj</i>",
                 parse_mode='HTML',
                 reply_markup=get_main_menu_inline()
             )
             return
         
-        text_msg = f"{format_header('Mój grafik', '📋')}\n"
-        text_msg += f"📅 <b>{get_week_range_text()}</b>\n\n"
+        text_msg = f"{format_header('Mój grafik', '📋')}"
+        text_msg += f"📅 <b>{get_week_range_text()}</b>\n"
+        text_msg += "─" * 35 + "\n\n"
         
-        if schedule:
-            text_msg += f"{schedule}\n"
+        # 1) Главное — смены, которые выдал координатор
+        if assigned:
+            text_msg += "📌 <b>Twoje zmiany (od kierownika):</b>\n\n"
+            by_date = {}
+            for s in assigned:
+                by_date.setdefault(s.get('date') or '', []).append(s)
+            for date in sorted(by_date.keys()):
+                text_msg += f"📆 <b>{date}</b>\n"
+                for s in by_date[date]:
+                    hotel = s.get('hotel') or '—'
+                    t0 = s.get('time_start') or ''
+                    t1 = s.get('time_end') or ''
+                    text_msg += f"📍 <b>{hotel}</b>\n"
+                    text_msg += f"⏰ {t0}-{t1}\n"
+                text_msg += "\n"
+        else:
+            text_msg += f"{format_info('Kierownik jeszcze nie przydzielił zmian na ten tydzień')}\n\n"
         
-        if shifts:
-            text_msg += "\n📌 <b>Dodatkowe zmiany:</b>\n"
-            for s in shifts:
-                status_icon = "✅" if s['status'] == 'confirmed' else "⏳"
-                text_msg += f"{status_icon} <b>{s['hotel']}</b>\n"
-                text_msg += f"   📆 {s['date']}  ⏰ {s['time_start']}-{s['time_end']}\n"
+        # 2) Доп. смены (кнопка potwierdź)
+        if extra_shifts:
+            text_msg += "➕ <b>Dodatkowe zmiany:</b>\n"
+            for s in extra_shifts:
+                status_icon = "✅" if s.get('status') == 'confirmed' else "⏳"
+                text_msg += f"{status_icon} <b>{s.get('hotel')}</b>\n"
+                text_msg += f"   📆 {s.get('date')}  ⏰ {s.get('time_start')}-{s.get('time_end')}\n"
+            text_msg += "\n"
+        
+        # 3) Опционально — что сам отправил (доступность)
+        if availability and str(availability).strip():
+            text_msg += "📝 <b>Twoja dostępność (wysłany grafik):</b>\n"
+            text_msg += f"<i>{availability}</i>\n"
         
         await update.message.reply_text(
             text_msg,

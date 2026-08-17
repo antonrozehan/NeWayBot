@@ -568,6 +568,33 @@ class Database:
             rows = await cursor.fetchall()
             return [r[0] for r in rows]
 
+    async def get_assigned_shifts_for_user(self, user_id, week_start=None):
+        """Смены, которые координатор выдал сотруднику на неделю"""
+        if week_start is None:
+            week_start = get_week_start_str()
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute('''
+                SELECT id, user_id, day, date, hotel, time_start, time_end, assigned_by, week_start
+                FROM assigned_shifts
+                WHERE user_id = ? AND week_start = ?
+                ORDER BY date, time_start
+            ''', (user_id, week_start))
+            rows = await cursor.fetchall()
+            return [
+                {
+                    'id': r[0],
+                    'user_id': r[1],
+                    'day': r[2],
+                    'date': r[3],
+                    'hotel': r[4],
+                    'time_start': r[5],
+                    'time_end': r[6],
+                    'assigned_by': r[7],
+                    'week_start': r[8],
+                }
+                for r in rows
+            ]
+
     async def is_user_assigned_on_date(self, user_id, date):
         week_start = get_week_start_str()
         async with aiosqlite.connect(self.db_path) as db:
