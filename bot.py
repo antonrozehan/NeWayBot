@@ -1,4 +1,5 @@
 import logging
+import html
 import asyncio
 import re
 import os
@@ -1467,11 +1468,18 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>Формат 1:</b>\n"
             "<code>Hotel 20.08.2026(08:00-16:00) - Ivan Ivanov</code>\n\n"
             "<b>Формат 2:</b>\n"
-            "<code>Hotel:\n"
-            "20.07.2026\n"
-            "08:00-12:00\n"
-            "Dvoineu Ivan\n"
-            "Makarenko Mariia</code>\n\n"
+            "<code>Hotel: Novotel Śniadania\n"
+            "22.08.2026\n"
+            "06:00-12:00\n"
+            "Polina Tkach\n"
+            "Viktoriia Kulik</code>\n\n"
+            f"{format_info('Текст под графиком (для всех):')}\n"
+            "После графика добавьте строку <code>---</code> и текст:\n"
+            "<code>---\n"
+            "Novotel Centrum:\n"
+            "Адрес: Marszałkowska 94/98\n"
+            "Форма: белая рубашка, черные штаны...\n"
+            "Приходите за 10 мин до смены</code>\n\n"
             f"{format_info('Или нажмите «Главное меню» для отмены')}",
             parse_mode='HTML',
             reply_markup=get_main_menu_inline()
@@ -1954,7 +1962,15 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_admin(user_id):
             return
         
-        parsed_schedules = parse_schedule_text(text)
+        # График + опциональный текст после "---"
+        schedule_body = text
+        extra_notes = ""
+        if "\n---" in text or text.strip().startswith("---"):
+            parts = text.split("---", 1)
+            schedule_body = parts[0].strip()
+            extra_notes = parts[1].strip() if len(parts) > 1 else ""
+        
+        parsed_schedules = parse_schedule_text(schedule_body)
         
         if not parsed_schedules:
             await update.message.reply_text(
@@ -2065,6 +2081,10 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 text_msg += f"{format_info('Udanej pracy 💪')}"
                 
+                if extra_notes:
+                    text_msg += "\n\n" + "─" * 35 + "\n"
+                    text_msg += f"📌 <b>Informacja:</b>\n{html.escape(extra_notes)}"
+                
                 await context.bot.send_message(
                     chat_id=user_id_db,
                     text=text_msg,
@@ -2096,7 +2116,14 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_admin(user_id):
             return
         
-        parsed_schedules = parse_schedule_text(text)
+        schedule_body = text
+        extra_notes = ""
+        if "\n---" in text or text.strip().startswith("---"):
+            parts = text.split("---", 1)
+            schedule_body = parts[0].strip()
+            extra_notes = parts[1].strip() if len(parts) > 1 else ""
+        
+        parsed_schedules = parse_schedule_text(schedule_body)
         
         if not parsed_schedules:
             await update.message.reply_text(
@@ -2206,6 +2233,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         text_msg += f"⏰ {shift['time_start']}-{shift['time_end']}\n\n"
                 
                 text_msg += f"{format_info('График обновлен! Проверьте изменения 💪')}"
+                if extra_notes:
+                    text_msg += "\n\n" + "─" * 35 + "\n"
+                    text_msg += f"📌 <b>Informacja:</b>\n{html.escape(extra_notes)}"
                 
                 await context.bot.send_message(
                     chat_id=user_id_db,
