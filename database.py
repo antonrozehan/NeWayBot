@@ -1,6 +1,7 @@
 import aiosqlite
 from datetime import datetime, timedelta
 from config import DB_PATH
+from utils import get_week_start_str
 
 class Database:
     def __init__(self):
@@ -200,25 +201,22 @@ class Database:
 
     async def save_user_schedule(self, user_id, schedule_text, week_start=None):
         if week_start is None:
-            today = datetime.now().date()
-            monday = today - timedelta(days=today.weekday())
-            next_monday = monday + timedelta(days=7)
-            week_start = next_monday.strftime("%Y-%m-%d")
+            week_start = get_week_start_str()
         
         async with aiosqlite.connect(self.db_path) as db:
-            # Используем INSERT OR REPLACE
+            await db.execute(
+                'DELETE FROM user_schedules WHERE user_id = ? AND week_start = ?',
+                (user_id, week_start)
+            )
             await db.execute('''
-                INSERT OR REPLACE INTO user_schedules (user_id, schedule_text, week_start)
+                INSERT INTO user_schedules (user_id, schedule_text, week_start)
                 VALUES (?, ?, ?)
             ''', (user_id, schedule_text, week_start))
             await db.commit()
 
     async def update_user_schedule(self, user_id, schedule_text, week_start=None):
         if week_start is None:
-            today = datetime.now().date()
-            monday = today - timedelta(days=today.weekday())
-            next_monday = monday + timedelta(days=7)
-            week_start = next_monday.strftime("%Y-%m-%d")
+            week_start = get_week_start_str()
         
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute('''
@@ -244,16 +242,13 @@ class Database:
 
     async def get_all_schedules_with_users(self, week_start=None):
         if week_start is None:
-            today = datetime.now().date()
-            monday = today - timedelta(days=today.weekday())
-            next_monday = monday + timedelta(days=7)
-            week_start = next_monday.strftime("%Y-%m-%d")
+            week_start = get_week_start_str()
         
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute('''
-                SELECT u.user_id, u.first_name, u.last_name, u.username, s.schedule_text, s.created_at
+                SELECT s.user_id, u.first_name, u.last_name, u.username, s.schedule_text, s.created_at
                 FROM user_schedules s
-                JOIN users u ON s.user_id = u.user_id
+                LEFT JOIN users u ON s.user_id = u.user_id
                 WHERE s.week_start = ?
                 ORDER BY u.first_name
             ''', (week_start,))
@@ -261,12 +256,15 @@ class Database:
             
             result = []
             for r in rows:
+                first = r[1] or ''
+                last = r[2] or ''
+                full = f"{first} {last}".strip() or f"ID {r[0]}"
                 result.append({
                     'user_id': r[0],
-                    'first_name': r[1],
-                    'last_name': r[2],
+                    'first_name': first,
+                    'last_name': last,
                     'username': r[3],
-                    'full_name': f"{r[1]} {r[2] or ''}".strip(),
+                    'full_name': full,
                     'schedule_text': r[4],
                     'created_at': r[5]
                 })
@@ -465,10 +463,7 @@ class Database:
             return None
 
     async def get_all_confirmed_shifts(self):
-        today = datetime.now().date()
-        monday = today - timedelta(days=today.weekday())
-        next_monday = monday + timedelta(days=7)
-        week_start = next_monday.strftime("%Y-%m-%d")
+        week_start = get_week_start_str()
         
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute('''
@@ -583,8 +578,4 @@ class Database:
             row = await cursor.fetchone()
             return row is not None
 
-def get_week_start_str():
-    today = datetime.now().date()
-    monday = today - timedelta(days=today.weekday())
-    next_monday = monday + timedelta(days=7)
-    return next_monday.strftime("%Y-%m-%d")
+# get_week_start_str — из utils

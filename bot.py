@@ -7,6 +7,11 @@ from datetime import datetime, timedelta, time as datetime_time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from config import BOT_TOKEN, ADMIN_ID
+try:
+    from config import ADMIN_IDS, GROUP_CHAT_ID as CFG_GROUP
+except ImportError:
+    ADMIN_IDS = [ADMIN_ID]
+    CFG_GROUP = None
 from database import Database
 from excel_exporter import ExcelExporter
 from not_assigned_exporter import NotAssignedExporter
@@ -14,8 +19,11 @@ from formatters import *
 from utils import *
 from templates import get_empty_schedule_template, get_example_schedule, get_schedule_instruction
 
-# Тестовая группа (временный ID)
-GROUP_CHAT_ID = -5056870971
+# Группа из config/.env (fallback — старый тестовый id)
+if CFG_GROUP is not None:
+    GROUP_CHAT_ID = CFG_GROUP
+else:
+    GROUP_CHAT_ID = -5056870971
 
 # Настройка логирования
 logging.basicConfig(
@@ -32,6 +40,20 @@ not_assigned_exporter = NotAssignedExporter()
 # Хранилище состояний
 user_states = {}
 temp_data = {}
+
+def is_admin(uid: int) -> bool:
+    try:
+        return int(uid) in ADMIN_IDS or int(uid) == int(ADMIN_ID)
+    except Exception:
+        return int(uid) == int(ADMIN_ID)
+
+async def notify_admins(context, text, parse_mode='HTML', reply_markup=None):
+    for aid in (ADMIN_IDS if ADMIN_IDS else [ADMIN_ID]):
+        try:
+            await context.bot.send_message(chat_id=aid, text=text, parse_mode=parse_mode, reply_markup=reply_markup)
+        except Exception as e:
+            logger.error(f"notify_admins {aid}: {e}")
+
 def get_admin_reply_keyboard():
     buttons = [
         ["📊 Все графики", "📁 Excel-отчет"],
@@ -91,12 +113,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_name=user.last_name
     )
     
-    is_admin = user.id == ADMIN_ID
+    is_admin_user = is_admin(user.id)
     
     current_week = format_week(get_current_week_start(), get_current_week_end())
     next_week = format_week(get_next_week_start(), get_next_week_end())
     
-    if is_admin:
+    if is_admin_user:
         keyboard = get_admin_reply_keyboard()
         welcome = (
             "👋 <b>Добрый день, Администратор!</b>\n\n"
@@ -155,9 +177,9 @@ async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    is_admin = user_id == ADMIN_ID
+    is_admin_user = is_admin(user_id)
     
-    if is_admin:
+    if is_admin_user:
         text = (
             f"{format_header('Помощь', '❓')}"
             "📌 <b>Доступные действия:</b>\n\n"
@@ -196,9 +218,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode='HTML')
 
 async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Перезапуск бота (только админ)"""
+    """Перезапуск бота (только админ) через systemd"""
     user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
+    if not is_admin(user_id):
         await update.message.reply_text(
             f"{format_error('Доступ запрещен')}",
             parse_mode='HTML'
@@ -214,18 +236,9 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     logger.info(f"Админ {user_id} запросил /restart")
-    
-    # Небольшая пауза, чтобы сообщение успело уйти
     await asyncio.sleep(1)
-    
-    try:
-        # Перезапуск текущего процесса
-        python = sys.executable
-        os.execv(python, [python] + sys.argv)
-    except Exception as e:
-        logger.error(f"Ошибка перезапуска: {e}")
-        # Fallback: просто выходим — если бот под supervisor/systemd/Render, он поднимется сам
-        os._exit(0)
+    import subprocess
+    subprocess.Popen(['/bin/systemctl', 'restart', 'newaybot'], start_new_session=True)
 
 # ========== НАПОМИНАНИЕ ОБ ОТПРАВКЕ ГРАФИКА ==========
 
@@ -266,7 +279,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data or ""
     
     if data == "main_menu":
-        is_admin = user_id == ADMIN_ID
+        is_admin_user = is_admin(user_id)
         keyboard = get_admin_reply_keyboard() if is_admin else get_main_reply_keyboard()
         
         await query.message.delete()
@@ -281,7 +294,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== ПОДТВЕРЖДЕНИЕ ОЧИСТКИ ГРАФИКОВ ==========
     if data == "confirm_clear_schedules":
-        if user_id != ADMIN_ID:
+        if not is_admin(user_id):
             await query.edit_message_text(
                 f"{format_error('Доступ запрещен')}",
                 parse_mode='HTML'
@@ -448,7 +461,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== РАССЫЛКА СМЕНЫ ==========
     if data == "broadcast_shift":
-        if user_id != ADMIN_ID:
+        if not is_admin(user_id):
             await query.edit_message_text(
                 f"{format_error('Доступ запрещен')}",
                 parse_mode='HTML'
@@ -665,7 +678,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if data.startswith("select_emp_"):
-        if user_id != ADMIN_ID:
+        if not is_admin(user_id):
             await query.edit_message_text(
                 f"{format_error('Доступ запрещен')}",
                 parse_mode='HTML'
@@ -958,7 +971,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         full_name = temp_data.get(user_id, {}).get('full_name', 'Неизвестно')
-        week_start = get_week_start_str()
+        # пт/сб — график на СЛЕДУЮЩУЮ неделю; таблицы в пн–вс смотрят ТЕКУЩУЮ
+        week_start = get_submit_week_start_str()
         
         await db.save_user_schedule(user_id, text, week_start)
         if username:
@@ -1012,7 +1026,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         full_name = temp_data.get(user_id, {}).get('full_name', 'Неизвестно')
-        week_start = get_week_start_str()
+        week_start = get_submit_week_start_str()
         
         await db.update_user_schedule(user_id, text, week_start)
         if username:
@@ -1056,7 +1070,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # ========== АДМИНСКИЕ ФУНКЦИИ ==========
-    if user_id != ADMIN_ID:
+    if not is_admin(user_id):
         await update.message.reply_text(
             f"{format_error('Доступ запрещен')}",
             parse_mode='HTML'
@@ -1141,7 +1155,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== НЕ НАЗНАЧЕННЫЕ ==========
     if text == "📋 Не назначенные":
-        if user_id != ADMIN_ID:
+        if not is_admin(user_id):
             await update.message.reply_text(
                 f"{format_error('Доступ запрещен')}",
                 parse_mode='HTML'
@@ -1299,7 +1313,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== РЕДАКТИРОВАТЬ ГОТОВЫЙ ГРАФИК ==========
     if text == "✏️ Редактировать график":
-        if user_id != ADMIN_ID:
+        if not is_admin(user_id):
             await update.message.reply_text(
                 f"{format_error('Доступ запрещен')}",
                 parse_mode='HTML'
@@ -1413,7 +1427,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== ОЧИСТКА ГРАФИКОВ (С ПОДТВЕРЖДЕНИЕМ) ==========
     if text == "🧹 Очистить графики":
-        if user_id != ADMIN_ID:
+        if not is_admin(user_id):
             await update.message.reply_text(
                 f"{format_error('Доступ запрещен')}",
                 parse_mode='HTML'
@@ -1466,7 +1480,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== ВВОД ЛИМИТА ДЛЯ СМЕНЫ ==========
     if user_states.get(user_id) == "waiting_broadcast_shift_limit":
-        if user_id != ADMIN_ID:
+        if not is_admin(user_id):
             return
         
         try:
@@ -1523,7 +1537,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== ПОИСК СВОБОДНЫХ (ВВОД) ==========
     if user_states.get(user_id) == "waiting_find_employees":
-        if user_id != ADMIN_ID:
+        if not is_admin(user_id):
             return
         
         input_text = text.strip()
@@ -1754,13 +1768,13 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== ПОСЛЕ ПОИСКА ==========
     if user_states.get(user_id) == "after_find_employees":
-        if user_id != ADMIN_ID:
+        if not is_admin(user_id):
             return
         return
     
     # ========== МАССОВАЯ РАССЫЛКА СМЕНЫ ==========
     if user_states.get(user_id) == "waiting_broadcast_shift_data":
-        if user_id != ADMIN_ID:
+        if not is_admin(user_id):
             return
         
         # \d{1,2} — работает 4:00 и 04:00; любые отели (Sofitel, Hilton, Mercure...)
@@ -1854,7 +1868,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== ЕДИНИЧНАЯ СМЕНА ДЛЯ СОТРУДНИКА ==========
     if user_states.get(user_id) == "waiting_single_shift_data":
-        if user_id != ADMIN_ID:
+        if not is_admin(user_id):
             return
         
         shift_pattern = r'^(.+?)\s+(\d{1,2}\.\d{1,2}\.\d{4})\s*\(\s*(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})\s*\)$'
@@ -1937,7 +1951,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== ВВОД ГОТОВОГО ГРАФИКА (РАССЫЛКА) ==========
     if user_states.get(user_id) == "waiting_final_schedule":
-        if user_id != ADMIN_ID:
+        if not is_admin(user_id):
             return
         
         parsed_schedules = parse_schedule_text(text)
@@ -1978,13 +1992,13 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if not_found:
             await update.message.reply_text(
-                f"{format_warning('Следующие сотрудники не найдены')}\n\n" +
+                f"{format_warning('Не найдены (им не уйдёт):')}\n\n" +
                 "\n".join(not_found) + "\n\n" +
-                f"{format_info('Проверьте правильность имен')}",
+                f"{format_info('Остальным найденным график будет отправлен')}",
                 parse_mode='HTML',
                 reply_markup=get_main_menu_inline()
             )
-            return
+            # продолжаем рассылку найденным — без return
         
         if not user_schedules:
             await update.message.reply_text(
@@ -2079,7 +2093,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== РЕДАКТИРОВАНИЕ ГОТОВОГО ГРАФИКА (ОБРАБОТКА) ==========
     if user_states.get(user_id) == "waiting_edit_final_schedule":
-        if user_id != ADMIN_ID:
+        if not is_admin(user_id):
             return
         
         parsed_schedules = parse_schedule_text(text)
@@ -2120,13 +2134,13 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if not_found:
             await update.message.reply_text(
-                f"{format_warning('Следующие сотрудники не найдены')}\n\n" +
+                f"{format_warning('Не найдены (им не уйдёт):')}\n\n" +
                 "\n".join(not_found) + "\n\n" +
-                f"{format_info('Проверьте правильность имен')}",
+                f"{format_info('Остальным найденным график будет отправлен')}",
                 parse_mode='HTML',
                 reply_markup=get_main_menu_inline()
             )
-            return
+            # продолжаем рассылку найденным — без return
         
         if not user_schedules:
             await update.message.reply_text(
@@ -2361,7 +2375,7 @@ def main():
     if job_queue:
         # Напоминания в группу: пт и сб, каждые 6 часов
         job_queue.run_repeating(send_reminder, interval=21600, first=10)
-        print("✅ Напоминания: пт/сб каждые 6 часов → группа -5056870971")
+        print(f"✅ Напоминания: пт/сб каждые 6 часов → группа {GROUP_CHAT_ID}")
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("id", id_command))

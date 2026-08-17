@@ -31,18 +31,39 @@ def get_next_week_end():
     next_sunday = next_monday + timedelta(days=6)
     return next_sunday.strftime("%d.%m.%Y")
 
-def get_week_start_str():
-    """Возвращает дату начала следующей недели в формате YYYY-MM-DD для БД"""
+def get_current_monday_date():
+    """Понедельник текущей календарной недели"""
     today = datetime.now().date()
-    monday = today - timedelta(days=today.weekday())
-    next_monday = monday + timedelta(days=7)
-    return next_monday.strftime("%Y-%m-%d")
+    return today - timedelta(days=today.weekday())
+
+
+def get_next_monday_date():
+    """Понедельник следующей календарной недели"""
+    return get_current_monday_date() + timedelta(days=7)
+
+
+def get_week_start_str():
+    """
+    Для таблиц, Excel, «Не назначенные», «Все графики»:
+    ВСЕГДА текущая неделя (пн–вс, где мы сейчас).
+    Сегодня пн 17.08 → 2026-08-17 (17–23), НЕ 24–30.
+    """
+    return get_current_monday_date().strftime("%Y-%m-%d")
+
+
+def get_submit_week_start_str():
+    """
+    Куда сохранять график при отправке официантом (пт/сб):
+    следующая неделя.
+    """
+    return get_next_monday_date().strftime("%Y-%m-%d")
+
 
 def get_week_range_text():
-    """Возвращает текстовое представление диапазона следующей недели"""
-    start = get_next_week_start()
-    end = get_next_week_end()
-    return f"{start} - {end}"
+    """Диапазон ТЕКУЩЕЙ недели для сообщений и Excel"""
+    start = get_current_monday_date()
+    end = start + timedelta(days=6)
+    return f"{start.strftime('%d.%m.%Y')} - {end.strftime('%d.%m.%Y')}"
 
 def format_week(start, end):
     """Форматирует неделю в читаемый вид"""
