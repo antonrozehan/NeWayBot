@@ -64,25 +64,17 @@ def get_admin_reply_keyboard():
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# True = можно слать график в любой день (ТЕСТ). Перед продом поставь False!
-TEST_ALLOW_SCHEDULE_ANY_DAY = True
-
 def is_schedule_submission_allowed() -> bool:
     """
-    Для официанта: пт/сб.
-    Если TEST_ALLOW_SCHEDULE_ANY_DAY = True — без ограничения (тест).
+    Для официанта: отправить / изменить график только
+    - Пятница (весь день)
+    - Суббота (весь день)
+    Воскресенье и будни — запрещено.
     """
-    if TEST_ALLOW_SCHEDULE_ANY_DAY:
-        return True
     return datetime.now().weekday() in (4, 5)  # 4=пт, 5=сб
 
 def get_submission_window_text() -> str:
     """Текст окна приёма графиков"""
-    if TEST_ALLOW_SCHEDULE_ANY_DAY:
-        return (
-            "🧪 <b>ТЕСТ:</b> график можно отправить в любой день\n"
-            "⚠️ <b>Отправить — 1 раз, изменить — тоже только 1 раз</b>"
-        )
     return (
         "📅 <b>График можно отправить / изменить только:</b>\n"
         "• Пятница — весь день\n"
