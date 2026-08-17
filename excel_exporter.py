@@ -1,6 +1,6 @@
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 from config import EXCEL_PATH
 
@@ -41,8 +41,24 @@ class ExcelExporter:
         ws['A1'].font = Font(bold=True, size=16)
         ws['A1'].alignment = center_alignment
         
+        # Даты дней недели от week_start (понедельник YYYY-MM-DD)
+        days_order = ['Poniedziałek', 'Wtorek', 'Środa', 'Czwartek', 'Piątek', 'Sobota', 'Niedziela']
+        day_dates = {}
+        week_range_label = str(week_start)
+        try:
+            if isinstance(week_start, str) and len(week_start) >= 10 and week_start[4] == '-':
+                base = datetime.strptime(week_start[:10], "%Y-%m-%d").date()
+            else:
+                base = datetime.strptime(str(week_start)[:10], "%d.%m.%Y").date()
+            for i, day in enumerate(days_order):
+                day_dates[day] = (base + timedelta(days=i)).strftime("%d.%m.%Y")
+            week_range_label = f"{day_dates['Poniedziałek']} - {day_dates['Niedziela']}"
+        except Exception:
+            for day in days_order:
+                day_dates[day] = ""
+
         ws.merge_cells('A2:D2')
-        ws['A2'] = f"Tydzień: {week_start}"
+        ws['A2'] = f"Tydzień: {week_range_label}"
         ws['A2'].font = Font(bold=True, size=14)
         ws['A2'].alignment = center_alignment
         
@@ -61,7 +77,6 @@ class ExcelExporter:
             cell.border = border
         
         # СОБИРАЕМ ДАННЫЕ ПО ДНЯМ (только рабочие дни)
-        days_order = ['Poniedziałek', 'Wtorek', 'Środa', 'Czwartek', 'Piątek', 'Sobota', 'Niedziela']
         days_data = {day: [] for day in days_order}
         
         if schedules:
@@ -125,10 +140,14 @@ class ExcelExporter:
             
             # Записываем день
             start_row = row
+            day_label = day
+            if day_dates.get(day):
+                day_label = f"{day}\n{day_dates[day]}"
+
             for idx, emp in enumerate(employees):
                 if idx == 0:
-                    # Первая строка - пишем день
-                    cell = ws.cell(row=row, column=1, value=day)
+                    # Первая строка — день + дата
+                    cell = ws.cell(row=row, column=1, value=day_label)
                     cell.font = day_font
                     cell.fill = day_fill
                     cell.border = border
@@ -155,10 +174,11 @@ class ExcelExporter:
                 ws.merge_cells(f'A{start_row}:A{row-1}')
         
         # АВТОМАТИЧЕСКАЯ ШИРИНА
-        ws.column_dimensions['A'].width = 18
+        ws.column_dimensions['A'].width = 16
         ws.column_dimensions['B'].width = 25
         ws.column_dimensions['C'].width = 20
         ws.column_dimensions['D'].width = 20
+        ws.row_dimensions[5].height = 20
         
         wb.save(self.file_path)
         return self.file_path
