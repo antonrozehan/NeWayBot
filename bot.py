@@ -57,24 +57,32 @@ async def notify_admins(context, text, parse_mode='HTML', reply_markup=None):
 
 def get_admin_reply_keyboard():
     buttons = [
-        ["📊 Все графики", "📁 Excel-отчет"],
-        ["📤 Рассылка", "🔍 Свободные"],
-        ["🧹 Очистить графики", "📋 Не назначенные"],
-        ["✏️ Редактировать график"]
+        ["📊 Все графики", "📅 След. неделя"],
+        ["📁 Excel-отчет", "📤 Рассылка"],
+        ["🔍 Свободные", "📋 Не назначенные"],
+        ["🧹 Очистить графики", "✏️ Редактировать график"]
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
+# True = можно слать график в любой день (ТЕСТ). Перед продом поставь False!
+TEST_ALLOW_SCHEDULE_ANY_DAY = True
+
 def is_schedule_submission_allowed() -> bool:
     """
-    Для официанта: отправить / изменить график только
-    - Пятница (весь день)
-    - Суббота (весь день)
-    Воскресенье и будни — запрещено.
+    Для официанта: пт/сб.
+    Если TEST_ALLOW_SCHEDULE_ANY_DAY = True — без ограничения (тест).
     """
+    if TEST_ALLOW_SCHEDULE_ANY_DAY:
+        return True
     return datetime.now().weekday() in (4, 5)  # 4=пт, 5=сб
 
 def get_submission_window_text() -> str:
     """Текст окна приёма графиков"""
+    if TEST_ALLOW_SCHEDULE_ANY_DAY:
+        return (
+            "🧪 <b>ТЕСТ:</b> график можно отправить в любой день\n"
+            "⚠️ <b>Отправить — 1 раз, изменить — тоже только 1 раз</b>"
+        )
     return (
         "📅 <b>График можно отправить / изменить только:</b>\n"
         "• Пятница — весь день\n"
@@ -281,7 +289,8 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if data == "main_menu":
         is_admin_user = is_admin(user_id)
-        keyboard = get_admin_reply_keyboard() if is_admin else get_main_reply_keyboard()
+        keyboard = get_admin_reply_keyboard() if is_admin_user else get_main_reply_keyboard()
+
         
         await query.message.delete()
         
@@ -301,151 +310,28 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='HTML'
             )
             return
-        
+        week_start = (temp_data.get(user_id) or {}).get("clear_week_start")
+        week_range = (temp_data.get(user_id) or {}).get("clear_week_range")
+        if not week_start:
+            await query.edit_message_text(
+                f"{format_error('Сначала укажите неделю')}",
+                parse_mode='HTML'
+            )
+            return
         try:
-            week_start = get_week_start_str()
-            cleared_tables = []
-            
-            # ========== ПОЛНАЯ ОЧИСТКА ТАБЛИЦ ==========
-            tables = ['users', 'user_schedules', 'user_shifts', 'assigned_shifts']
-            
-            # Способ 1: специальный метод в Database
-            if hasattr(db, 'clear_all_data'):
-                await db.clear_all_data()
-                cleared_tables = tables[:]
-            elif hasattr(db, 'wipe_all'):
-                await db.wipe_all()
-                cleared_tables = tables[:]
-            else:
-                # Способ 2: очистка каждой таблицы через execute / raw SQL
-                for table in tables:
-                    ok = False
-                    # Метод вида clear_users, clear_user_schedules...
-                    method_name = f"clear_{table}"
-                    if hasattr(db, method_name):
-                        try:
-                            await getattr(db, method_name)()
-                            ok = True
-                        except Exception as e:
-                            logger.error(f"{method_name}: {e}")
-                    
-                    # delete_all_* 
-                    if not ok and hasattr(db, f"delete_all_{table}"):
-                        try:
-                            await getattr(db, f"delete_all_{table}")()
-                            ok = True
-                        except Exception as e:
-                            logger.error(f"delete_all_{table}: {e}")
-                    
-                    # Прямой SQL через db.conn / db.db / db.execute
-                    if not ok:
-                        for attr in ('execute', 'conn', 'db', 'connection'):
-                            obj = getattr(db, attr, None)
-                            if obj is None:
-                                continue
-                            try:
-                                sql = f"DELETE FROM {table}"
-                                if callable(obj):
-                                    result = obj(sql)
-                                    if asyncio.iscoroutine(result):
-                                        await result
-                                elif hasattr(obj, 'execute'):
-                                    result = obj.execute(sql)
-                                    if asyncio.iscoroutine(result):
-                                        await result
-                                    if hasattr(obj, 'commit'):
-                                        commit = obj.commit()
-                                        if asyncio.iscoroutine(commit):
-                                            await commit
-                                ok = True
-                                break
-                            except Exception as e:
-                                logger.error(f"SQL {table} via {attr}: {e}")
-                    
-                    if ok:
-                        cleared_tables.append(table)
-                        logger.info(f"Очищена таблица: {table}")
-                
-                # Дополнительно: clear_assigned_shifts_for_week
-                try:
-                    await db.clear_assigned_shifts_for_week(week_start)
-                    if 'assigned_shifts' not in cleared_tables:
-                        cleared_tables.append('assigned_shifts')
-                except Exception as e:
-                    logger.error(f"clear_assigned_shifts_for_week: {e}")
-            
-            # Сбрасываем все временные флаги в боте
-            temp_data.clear()
-            user_states.clear()
-            
-            # Очищаем Excel-файлы на диске
-            files_deleted = 0
-            folders_to_clean = [
-                "/tmp/bot_files",
-                "bot_files",
-                "exports",
-                "files",
-                ".",
-            ]
-            if hasattr(excel_exporter, 'file_path') and excel_exporter.file_path:
-                parent = os.path.dirname(excel_exporter.file_path)
-                if parent:
-                    folders_to_clean.append(parent)
-            if hasattr(excel_exporter, 'output_dir') and excel_exporter.output_dir:
-                folders_to_clean.append(excel_exporter.output_dir)
-            
-            for folder in folders_to_clean:
-                if not folder or not os.path.isdir(folder):
-                    continue
-                try:
-                    for name in os.listdir(folder):
-                        if name.endswith(('.xlsx', '.xls', '.csv')):
-                            path = os.path.join(folder, name)
-                            try:
-                                os.remove(path)
-                                files_deleted += 1
-                                logger.info(f"Удалён файл: {path}")
-                            except Exception as e:
-                                logger.error(f"Не удалось удалить {path}: {e}")
-                except Exception as e:
-                    logger.error(f"Ошибка очистки папки {folder}: {e}")
-            
-            # Не обнуляем file_path — иначе падает not_assigned_exporter
-            # Файлы уже удалены с диска, при следующем экспорте создадутся заново
-            
-            # Формируем отчёт
-            report_lines = []
-            for t in ['users', 'user_schedules', 'user_shifts', 'assigned_shifts']:
-                if t in cleared_tables:
-                    report_lines.append(f"✅ Очищена таблица: <code>{t}</code>")
-                else:
-                    report_lines.append(f"⚠️ Не удалось очистить: <code>{t}</code>")
-            
-            all_ok = len(cleared_tables) >= 3  # хотя бы основные
-            
-            if all_ok:
-                result_msg = (
-                    f"{format_success('ВСЕ ДАННЫЕ УСПЕШНО ОЧИЩЕНЫ!')}\n\n"
-                    + "\n".join(report_lines) + "\n\n"
-                    f"✅ Excel-файлы удалены: {files_deleted}\n"
-                    f"✅ Состояния бота сброшены\n\n"
-                    f"📅 Неделя: <b>{get_week_range_text()}</b>\n\n"
-                    f"{format_info('Бот готов принимать новые графики')}"
-                )
-            else:
-                result_msg = (
-                    f"{format_warning('Очистка частичная')}\n\n"
-                    + "\n".join(report_lines) + "\n\n"
-                    f"Excel-файлов удалено: {files_deleted}\n\n"
-                    f"{format_info('Пришли database.py — сделаю 100% очистку')}"
-                )
-            
-            await query.edit_message_text(result_msg, parse_mode='HTML')
-            logger.info(f"Очистка таблиц: {cleared_tables}, files={files_deleted}")
+            stats = await db.clear_data_for_week(week_start)
+            temp_data.pop(user_id, None)
+            await query.edit_message_text(
+                f"{format_success('Неделя очищена')}\n\n"
+                f"📅 <b>{week_range}</b>\n\n"
+                f"🗑 Графики: {stats.get('schedules', 0)}\n"
+                f"🗑 Назначения: {stats.get('assigned', 0)}\n"
+                f"🗑 Доп. смены: {stats.get('extra_shifts', 0)}\n\n"
+                f"{format_info('Другие недели не изменены')}",
+                parse_mode='HTML'
+            )
         except Exception as e:
-            logger.error(f"Ошибка очистки графиков: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Ошибка очистки недели: {e}")
             await query.edit_message_text(
                 f"{format_error('Ошибка при очистке')}\n\n{str(e)}",
                 parse_mode='HTML'
@@ -1141,6 +1027,50 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_admin_reply_keyboard()
         )
         return
+
+    # ========== СЛЕДУЮЩАЯ НЕДЕЛЯ (новые графики пт–сб) ==========
+    if text == "📅 След. неделя":
+        next_week = get_submit_week_start_str()
+        next_range = get_week_range_from_str(next_week)
+        schedules = await db.get_all_schedules_with_users(next_week)
+        if not schedules:
+            await update.message.reply_text(
+                f"{format_header('Следующая неделя', '📅')}"
+                f"📅 <b>{next_range}</b>\n\n"
+                f"{format_info('Пока нет новых графиков на следующую неделю')}\n"
+                "💡 <i>Официанты присылают их в пятницу и субботу</i>",
+                parse_mode='HTML',
+                reply_markup=get_admin_reply_keyboard()
+            )
+            return
+
+        text_msg = f"{format_header('Следующая неделя', '📅')}"
+        text_msg += f"📅 <b>{next_range}</b>\n\n"
+        for s in schedules:
+            text_msg += f"👤 <b>{s['full_name']}</b>\n"
+            text_msg += f"📱 @{s['username'] or 'нет username'}\n"
+            text_msg += f"{s['schedule_text']}\n"
+            text_msg += "─" * 30 + "\n"
+
+        await update.message.reply_text(
+            text_msg,
+            parse_mode='HTML',
+            reply_markup=get_admin_reply_keyboard()
+        )
+        try:
+            base_path = ensure_excel_path(next_week)
+            excel_path = excel_exporter.export_schedules_to_excel(schedules, next_week)
+            with open(excel_path, 'rb') as f:
+                await context.bot.send_document(
+                    chat_id=user_id,
+                    document=f,
+                    filename=f"Grafik_{next_week}.xlsx",
+                    caption=f"📁 Следующая неделя: {next_range}",
+                    parse_mode='HTML'
+                )
+        except Exception as e:
+            logger.error(f"Excel след. неделя: {e}")
+        return
     
     # ========== EXCEL-ОТЧЕТ ==========
     if text == "📁 Excel-отчет":
@@ -1461,7 +1391,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # ========== ОЧИСТКА ГРАФИКОВ (С ПОДТВЕРЖДЕНИЕМ) ==========
+    # ========== ОЧИСТКА ГРАФИКОВ (НЕДЕЛЯ → ДА/НЕТ) ==========
     if text == "🧹 Очистить графики":
         if not is_admin(user_id):
             await update.message.reply_text(
@@ -1469,21 +1399,51 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='HTML'
             )
             return
-        
+        user_states[user_id] = "waiting_clear_week"
+        await update.message.reply_text(
+            f"{format_header('Очистка недели', '🧹')}"
+            "Введите неделю, которую нужно очистить.\n\n"
+            "<b>Примеры:</b>\n"
+            "<code>17.08-23.08</code>\n"
+            "<code>17.08.2026 - 23.08.2026</code>\n\n"
+            f"{format_info('Другие недели не будут затронуты')}",
+            parse_mode='HTML',
+            reply_markup=get_main_menu_inline()
+        )
+        return
+
+    if user_states.get(user_id) == "waiting_clear_week":
+        if not is_admin(user_id):
+            return
+        parsed = parse_week_range_input(text)
+        if not parsed:
+            await update.message.reply_text(
+                f"{format_error('Не понял неделю')}\n\n"
+                "Пример: <code>17.08-23.08</code>",
+                parse_mode='HTML',
+                reply_markup=get_main_menu_inline()
+            )
+            return
+        week_start, week_range = parsed
+        temp_data[user_id] = temp_data.get(user_id, {})
+        temp_data[user_id]["clear_week_start"] = week_start
+        temp_data[user_id]["clear_week_range"] = week_range
+        user_states[user_id] = None
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("✅ Да, очистить", callback_data="confirm_clear_schedules"),
                 InlineKeyboardButton("❌ Нет, отмена", callback_data="cancel_clear_schedules")
             ]
         ])
-        
         await update.message.reply_text(
             f"{format_header('Подтверждение очистки', '🧹')}"
-            "⚠️ <b>Вы точно хотите очистить ВСЕ графики официантов?</b>\n\n"
-            "Будет удалено:\n"
-            "• Все отправленные графики сотрудников\n"
-            "• Все назначенные смены на текущую неделю\n\n"
-            "❗️ <b>Это действие нельзя отменить!</b>",
+            f"📅 Неделя: <b>{week_range}</b>\n\n"
+            "Будет удалено ТОЛЬКО за эту неделю:\n"
+            "• графики официантов\n"
+            "• назначенные смены\n"
+            "• доп. смены на эти даты\n\n"
+            "Другие недели не трогаем.\n"
+            "❗️ <b>Отменить после Да нельзя</b>",
             parse_mode='HTML',
             reply_markup=keyboard
         )
@@ -1498,7 +1458,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(
             f"{format_header('Рассылка графика', '📤')}"
-            f"📅 <b>{get_week_range_text()}</b>\n\n"
+            f"📅 <b>{get_week_range_from_str(get_broadcast_week_start_str())}</b>\n"
+            f"ℹ️ <i>Пт–вс рассылка пишется на СЛЕДУЮЩУЮ неделю</i>\n\n"
             f"{format_info('Поддерживаемые форматы:')}\n\n"
             "<b>Формат 1:</b>\n"
             "<code>Hotel 20.08.2026(08:00-16:00) - Ivan Ivanov</code>\n\n"
@@ -2059,7 +2020,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        week_start = get_week_start_str()
+        week_start = get_broadcast_week_start_str()
         await db.clear_assigned_shifts_for_week(week_start)
         
         sent_count = 0

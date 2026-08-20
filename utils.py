@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 
@@ -64,6 +65,51 @@ def get_week_range_text():
     start = get_current_monday_date()
     end = start + timedelta(days=6)
     return f"{start.strftime('%d.%m.%Y')} - {end.strftime('%d.%m.%Y')}"
+
+
+def get_week_range_from_str(week_start: str) -> str:
+    """Диапазон по понедельнику YYYY-MM-DD"""
+    start = datetime.strptime(week_start[:10], "%Y-%m-%d").date()
+    end = start + timedelta(days=6)
+    return f"{start.strftime('%d.%m.%Y')} - {end.strftime('%d.%m.%Y')}"
+
+
+def parse_week_range_input(text: str):
+    """
+    13.08-19.08 или 13.08.2026 - 19.08.2026
+    Возвращает (week_start YYYY-MM-DD понедельника, 'dd.mm.yyyy - dd.mm.yyyy') или None.
+    """
+    if not text:
+        return None
+    raw = text.strip().replace('–', '-').replace('—', '-')
+    raw = re.sub(r'\s+', '', raw)
+    year = datetime.now().year
+    m = re.match(
+        r'^(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?(?:-(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?)?$',
+        raw
+    )
+    if not m:
+        return None
+    d1, mo1, y1, d2, mo2, y2 = m.groups()
+    y1 = int(y1) if y1 else year
+    try:
+        start = datetime(y1, int(mo1), int(d1)).date()
+    except ValueError:
+        return None
+    monday = start - timedelta(days=start.weekday())
+    sunday = monday + timedelta(days=6)
+    return monday.strftime("%Y-%m-%d"), f"{monday.strftime('%d.%m.%Y')} - {sunday.strftime('%d.%m.%Y')}"
+
+
+def get_broadcast_week_start_str() -> str:
+    """
+    Куда писать готовую рассылку:
+    пт–вс — на СЛЕДУЮЩУЮ неделю (сбор уже идёт),
+    пн–чт — на текущую.
+    """
+    if datetime.now().weekday() >= 4:  # Fri Sat Sun
+        return get_submit_week_start_str()
+    return get_week_start_str()
 
 def format_week(start, end):
     """Форматирует неделю в читаемый вид"""

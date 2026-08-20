@@ -559,6 +559,33 @@ class Database:
             await db.execute('DELETE FROM assigned_shifts')
             await db.commit()
 
+    async def clear_data_for_week(self, week_start: str):
+        """Удаляет графики и назначения ТОЛЬКО указанной недели. users не трогает."""
+        start = datetime.strptime(week_start[:10], "%Y-%m-%d").date()
+        dates_dot = [(start + timedelta(days=i)).strftime("%d.%m.%Y") for i in range(7)]
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                'DELETE FROM user_schedules WHERE week_start = ?', (week_start,)
+            )
+            n_sched = cur.rowcount
+            cur = await db.execute(
+                'DELETE FROM assigned_shifts WHERE week_start = ?', (week_start,)
+            )
+            n_assigned = cur.rowcount
+            n_shifts = 0
+            if dates_dot:
+                q = ','.join('?' * len(dates_dot))
+                cur = await db.execute(
+                    f'DELETE FROM user_shifts WHERE date IN ({q})', dates_dot
+                )
+                n_shifts = cur.rowcount
+            await db.commit()
+        return {
+            'schedules': n_sched or 0,
+            'assigned': n_assigned or 0,
+            'extra_shifts': n_shifts or 0,
+        }
+
     async def get_assigned_days_for_user(self, user_id, week_start):
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute('''
