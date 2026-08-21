@@ -74,6 +74,11 @@ def get_week_range_from_str(week_start: str) -> str:
     return f"{start.strftime('%d.%m.%Y')} - {end.strftime('%d.%m.%Y')}"
 
 
+def get_submit_week_range_text():
+    """Неделя, на которую сейчас собирают графики (пт–сб = следующая)."""
+    return get_week_range_from_str(get_submit_week_start_str())
+
+
 def parse_week_range_input(text: str):
     """
     13.08-19.08 или 13.08.2026 - 19.08.2026

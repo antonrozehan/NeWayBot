@@ -64,8 +64,8 @@ def get_admin_reply_keyboard():
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# True = можно слать график в любой день (ТЕСТ). Перед продом поставь False!
-TEST_ALLOW_SCHEDULE_ANY_DAY = True
+# True = можно слать график в любой день (только для теста)
+TEST_ALLOW_SCHEDULE_ANY_DAY = False
 
 def is_schedule_submission_allowed() -> bool:
     """
@@ -140,13 +140,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         keyboard = get_main_reply_keyboard()
         
-        _sch = await db.get_user_schedule(user.id)
+        _sch = await db.get_user_schedule(user.id, get_submit_week_start_str())
         has_schedule = _sch is not None and str(_sch).strip() != ""
         
         welcome = (
             "👋 <b>Witaj!</b>\n\n"
             f"{format_header('Panel pracownika', '👤')}"
-            f"📅 Następny tydzień: <b>{next_week}</b>\n\n"
+            f"📅 Następny tydzień: <b>{get_submit_week_range_text()}</b>\n\n"
         )
         
         if not has_schedule:
@@ -259,10 +259,10 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     
     text = (
         "📢 <b>PRZYPOMNIENIE!</b>\n\n"
-        f"📅 Następny tydzień: <b>{get_week_range_text()}</b>\n\n"
+        f"📅 Następny tydzień: <b>{get_submit_week_range_text()}</b>\n\n"
         f"{format_info('Czas wysłać swój grafik pracy!')}\n"
         "💡 <i>Naciśnij «📝 Отправить график»</i>\n\n"
-        f"{get_submission_window_text()}"
+        "⚠️ Grafik na ten tydzień można wysłać tylko raz"
     )
     
     try:
@@ -632,13 +632,14 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        _sch = await db.get_user_schedule(user_id)
+        _sch = await db.get_user_schedule(user_id, get_submit_week_start_str())
         has_schedule = _sch is not None and str(_sch).strip() != ""
         if has_schedule:
             await update.message.reply_text(
-                f"{format_warning('Вы уже отправили график')}\n\n"
-                "⚠️ <b>Отправить можно только один раз.</b>\n"
-                "✏️ Изменить можно через кнопку «✏️ Изменить график» (тоже только 1 раз)",
+                f"{format_warning('Вы уже отправили график на эту неделю')}\n\n"
+                f"📅 <b>{get_submit_week_range_text()}</b>\n\n"
+                "⚠️ <b>На одну неделю — один раз.</b>\n"
+                "✏️ Изменить можно через «✏️ Изменить график» (1 раз)",
                 parse_mode='HTML',
                 reply_markup=get_main_menu_inline()
             )
@@ -650,8 +651,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "─────────────────────\n\n"
             f"👤 <b>Wprowadź IMIĘ i NAZWISKO po angielsku:</b>\n"
             "<code>Ivan Ivanov</code>\n\n"
-            f"📅 <i>Grafik na tydzień: {get_week_range_text()}</i>\n\n"
-            "⚠️ <b>График можно отправить только один раз!</b>",
+            f"📅 <i>Grafik na tydzień: {get_submit_week_range_text()}</i>\n\n"
+            "⚠️ <b>График можно отправить только один раз на эту неделю!</b>",
             parse_mode='HTML',
             reply_markup=get_main_menu_inline()
         )
@@ -738,10 +739,11 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        schedule = await db.get_user_schedule(user_id)
+        schedule = await db.get_user_schedule(user_id, get_submit_week_start_str())
         if not schedule:
             await update.message.reply_text(
-                f"{format_error('Nie masz zapisanego grafiku')}\n\n"
+                f"{format_error('Nie masz grafiku na nowy tydzień')}\n\n"
+                f"📅 <b>{get_submit_week_range_text()}</b>\n\n"
                 f"{format_info('Najpierw wyślij swój grafik')}\n"
                 "💡 <i>Użyj przycisku «📝 Отправить график»</i>",
                 parse_mode='HTML',
@@ -749,7 +751,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        if temp_data.get(user_id, {}).get("already_edited"):
+        edit_key = f"already_edited_{get_submit_week_start_str()}"
+        if temp_data.get(user_id, {}).get(edit_key) or temp_data.get(user_id, {}).get("already_edited"):
             await update.message.reply_text(
                 f"{format_warning('Вы уже изменили график')}\n\n"
                 "⚠️ <b>График можно изменить только один раз!</b>\n\n"
@@ -763,7 +766,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(
             f"{format_header('Edytuj grafik', '✏️')}"
-            f"📅 <b>{get_week_range_text()}</b>\n"
+            f"📅 <b>{get_submit_week_range_text()}</b>\n"
             "───────────────────\n\n"
             f"{format_info('Twój obecny grafik:')}\n"
             f"{schedule}\n\n"
@@ -843,7 +846,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ <b>Imię zapisane:</b> {text.strip()}\n\n"
             f"{format_header('Napisz swój grafik', '📝')}"
-            f"📅 <b>{get_week_range_text()}</b>\n"
+            f"📅 <b>{get_submit_week_range_text()}</b>\n"
             "─────────────────────\n\n"
             f"{format_info('Wpisz swój grafik według wzoru:')}\n\n"
             "<code>Poniedziałek:</code>\n"
@@ -906,7 +909,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{format_header('Новый график', '📋')}"
                 f"👤 <b>Сотрудник:</b> {full_name}\n"
                 f"📱 @{username or 'нет username'}\n"
-                f"📅 <b>{get_week_range_text()}</b>\n\n"
+                f"📅 <b>{get_submit_week_range_text()}</b>\n\n"
                 f"{text}"
             ),
             parse_mode='HTML'
@@ -917,7 +920,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(
             f"{format_success('Grafik wysłany!')}\n\n"
-            f"📅 <b>{get_week_range_text()}</b>\n\n"
+            f"📅 <b>{get_submit_week_range_text()}</b>\n\n"
             f"{format_info('Dane dodane do tabeli Excel')}\n"
             f"{format_info('Oczekuj na gotowy grafik od menedżera')}\n\n"
             "⚠️ <b>Отправить можно только один раз. Изменить — тоже только один раз.</b>",
@@ -957,7 +960,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Помечаем, что график уже был изменён (один раз)
         if user_id not in temp_data:
             temp_data[user_id] = {}
-        temp_data[user_id]["already_edited"] = True
+        temp_data[user_id][f"already_edited_{week_start}"] = True
         
         await context.bot.send_message(
             chat_id=ADMIN_ID,
@@ -966,7 +969,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "─────────────────────\n\n"
                 f"👤 <b>Сотрудник:</b> {full_name}\n"
                 f"📱 @{username or 'нет username'}\n"
-                f"📅 <b>{get_week_range_text()}</b>\n\n"
+                f"📅 <b>{get_submit_week_range_text()}</b>\n\n"
                 f"📋 <b>Новый график:</b>\n"
                 f"{text}\n\n"
                 "🔄 <i>Старый график удален</i>\n"
@@ -980,7 +983,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(
             "✅ <b>ГРАФИК ИЗМЕНЕН!</b>\n\n"
-            f"📅 <b>{get_week_range_text()}</b>\n\n"
+            f"📅 <b>{get_submit_week_range_text()}</b>\n\n"
             f"📋 <b>Новый график:</b>\n"
             f"{text}\n\n"
             "ℹ️ <b>Уведомление отправлено менеджеру</b>\n"

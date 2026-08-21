@@ -230,13 +230,20 @@ class Database:
             ''', (user_id, schedule_text, week_start))
             await db.commit()
 
-    async def get_user_schedule(self, user_id):
+    async def get_user_schedule(self, user_id, week_start=None):
         async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute('''
-                SELECT schedule_text FROM user_schedules 
-                WHERE user_id = ? 
-                ORDER BY created_at DESC LIMIT 1
-            ''', (user_id,))
+            if week_start:
+                cursor = await db.execute('''
+                    SELECT schedule_text FROM user_schedules 
+                    WHERE user_id = ? AND week_start = ?
+                    ORDER BY created_at DESC LIMIT 1
+                ''', (user_id, week_start))
+            else:
+                cursor = await db.execute('''
+                    SELECT schedule_text FROM user_schedules 
+                    WHERE user_id = ? 
+                    ORDER BY created_at DESC LIMIT 1
+                ''', (user_id,))
             row = await cursor.fetchone()
             return row[0] if row else None
 
