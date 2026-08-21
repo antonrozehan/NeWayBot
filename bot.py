@@ -1047,32 +1047,41 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        text_msg = f"{format_header('Следующая неделя', '📅')}"
-        text_msg += f"📅 <b>{next_range}</b>\n\n"
-        for s in schedules:
-            text_msg += f"👤 <b>{s['full_name']}</b>\n"
-            text_msg += f"📱 @{s['username'] or 'нет username'}\n"
-            text_msg += f"{s['schedule_text']}\n"
-            text_msg += "─" * 30 + "\n"
-
         await update.message.reply_text(
-            text_msg,
+            f"{format_header('Следующая неделя', '📅')}"
+            f"📅 <b>{next_range}</b>\n"
+            f"👥 Прислали график: <b>{len(schedules)}</b>\n\n"
+            + "\n".join(
+                f"• {s.get('full_name') or s.get('user_id')}"
+                for s in schedules
+            ),
             parse_mode='HTML',
             reply_markup=get_admin_reply_keyboard()
         )
         try:
-            base_path = ensure_excel_path(next_week)
+            ensure_excel_path(next_week)
             excel_path = excel_exporter.export_schedules_to_excel(schedules, next_week)
-            with open(excel_path, 'rb') as f:
-                await context.bot.send_document(
-                    chat_id=user_id,
-                    document=f,
-                    filename=f"Grafik_{next_week}.xlsx",
-                    caption=f"📁 Следующая неделя: {next_range}",
+            path = excel_path or getattr(excel_exporter, 'file_path', None)
+            if path and os.path.isfile(path):
+                with open(path, 'rb') as f:
+                    await context.bot.send_document(
+                        chat_id=user_id,
+                        document=f,
+                        filename=f"Grafik_{next_week}.xlsx",
+                        caption=f"📁 Следующая неделя: {next_range}\n👥 {len(schedules)} человек",
+                        parse_mode='HTML'
+                    )
+            else:
+                await update.message.reply_text(
+                    f"{format_warning('Excel не создался, но графики в базе есть')}: {len(schedules)}",
                     parse_mode='HTML'
                 )
         except Exception as e:
             logger.error(f"Excel след. неделя: {e}")
+            await update.message.reply_text(
+                f"{format_error('Ошибка Excel')}\n{e}",
+                parse_mode='HTML'
+            )
         return
     
     # ========== EXCEL-ОТЧЕТ ==========
