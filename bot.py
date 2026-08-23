@@ -1068,7 +1068,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         chat_id=user_id,
                         document=f,
                         filename=f"Grafik_{next_week}.xlsx",
-                        caption=f"📁 Следующая неделя: {next_range}\n👥 {len(schedules)} человек",
+                        caption=f"📁 Следующая неделя (главная таблица): {next_range}\n👥 {len(schedules)} человек",
                         parse_mode='HTML'
                     )
             else:
@@ -1080,6 +1080,91 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Excel след. неделя: {e}")
             await update.message.reply_text(
                 f"{format_error('Ошибка Excel')}\n{e}",
+                parse_mode='HTML'
+            )
+
+        # Вторая таблица: неназначенные на СЛЕДУЮЩУЮ неделю
+        try:
+            assigned_shifts = await db.get_assigned_shifts_for_week(next_week)
+            assigned_dates_by_user = {}
+            for shift in assigned_shifts:
+                uid = shift['user_id']
+                date = shift['date']
+                assigned_dates_by_user.setdefault(uid, [])
+                if date not in assigned_dates_by_user[uid]:
+                    assigned_dates_by_user[uid].append(date)
+
+            days_order = ['Poniedziałek', 'Wtorek', 'Środa', 'Czwartek', 'Piątek', 'Sobota', 'Niedziela']
+            week_start_date = datetime.strptime(next_week, "%Y-%m-%d").date()
+            day_dates = {day: (week_start_date + timedelta(days=i)).strftime("%d.%m.%Y")
+                         for i, day in enumerate(days_order)}
+
+            not_assigned = []
+            for user in schedules:
+                schedule_text = (user.get('schedule_text') or '').strip()
+                if not schedule_text:
+                    continue
+                employee_days = []
+                for line in schedule_text.split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    found_day = None
+                    for day in days_order:
+                        if day.lower() in line.lower():
+                            found_day = day
+                            break
+                    if not found_day:
+                        continue
+                    time_info = line.split(':', 1)[1].strip() if ':' in line else ''
+                    tl = time_info.lower()
+                    if any(w in tl for w in ['wolne', 'nie mogę', 'off', 'free', 'wolny']):
+                        continue
+                    if not time_info:
+                        time_info = 'cały dzień'
+                    date_str = day_dates.get(found_day)
+                    if date_str:
+                        employee_days.append({'day': found_day, 'date': date_str, 'time': time_info})
+                if not employee_days:
+                    continue
+                assigned_dates = assigned_dates_by_user.get(user['user_id'], [])
+                missing = [d for d in employee_days if d['date'] not in assigned_dates]
+                if missing or not assigned_dates:
+                    not_assigned.append({
+                        'full_name': user.get('full_name'),
+                        'username': user.get('username'),
+                        'missing_dates': missing if missing else employee_days,
+                        'employee_days': employee_days,
+                    })
+
+            if not_assigned:
+                base_path = ensure_excel_path(next_week)
+                na_path = not_assigned_exporter.export_not_assigned_to_excel(
+                    not_assigned, next_week, base_path
+                )
+                with open(na_path, 'rb') as f:
+                    await context.bot.send_document(
+                        chat_id=user_id,
+                        document=f,
+                        filename=f"Не_назначенные_{next_week}.xlsx",
+                        caption=(
+                            f"📁 <b>Не назначенные (следующая неделя)</b>\n"
+                            f"📅 {next_range}\n"
+                            f"👥 {len(not_assigned)} человек"
+                        ),
+                        parse_mode='HTML'
+                    )
+            else:
+                await update.message.reply_text(
+                    f"{format_success('На следующую неделю все дни уже назначены (или нечего назначать)')}\n"
+                    f"📅 {next_range}",
+                    parse_mode='HTML',
+                    reply_markup=get_admin_reply_keyboard()
+                )
+        except Exception as e:
+            logger.error(f"Не назначенные след. неделя: {e}")
+            await update.message.reply_text(
+                f"{format_error('Ошибка таблицы неназначенных')}\n{e}",
                 parse_mode='HTML'
             )
         return
@@ -1140,8 +1225,10 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
+        # Главная «Не назначенные» = ТЕКУЩАЯ неделя (с понедельника сюда перетекают графики)
         week_start = get_week_start_str()
-        all_users_with_schedules = await db.get_all_users_with_schedules()
+        week_range = get_week_range_from_str(week_start)
+        schedules = await db.get_all_schedules_with_users(week_start)
         assigned_shifts = await db.get_assigned_shifts_for_week(week_start)
         
         assigned_dates_by_user = {}
@@ -1162,13 +1249,13 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             date_obj = week_start_date + timedelta(days=i)
             day_dates[day] = date_obj.strftime("%d.%m.%Y")
         
-        for user in all_users_with_schedules:
-            if not user['schedule_text']:
+        for user in schedules:
+            if not user.get('schedule_text'):
                 continue
             
             user_id_db = user['user_id']
             full_name = user['full_name']
-            username = user['username']
+            username = user.get('username')
             schedule_text = user['schedule_text']
             
             employee_days = []
@@ -1258,7 +1345,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         filename=f"Не_назначенные_{week_start}.xlsx",
                         caption=(
                             f"📁 <b>Сотрудники без назначений</b>\n"
-                            f"📅 {get_week_range_text()}\n"
+                            f"📅 {week_range}\n"
                             f"👥 {len(not_assigned)} человек\n\n"
                             f"ℹ️ <i>Обновлено: {datetime.now().strftime('%H:%M:%S')}</i>"
                         ),
@@ -1266,7 +1353,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     await update.message.reply_text(
                         f"{format_success('Таблица обновлена!')}\n"
-                        f"📅 {get_week_range_text()}\n"
+                        f"📅 {week_range}\n"
                         f"👥 {len(not_assigned)} человек без назначений",
                         parse_mode='HTML',
                         reply_markup=get_admin_reply_keyboard()
@@ -1282,7 +1369,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         else:
             await update.message.reply_text(
-                f"{format_success('Все сотрудники полностью назначены на все свои дни!')}",
+                f"{format_success('Все сотрудники полностью назначены на все свои дни!')}\n"
+                f"📅 {week_range}",
                 parse_mode='HTML',
                 reply_markup=get_admin_reply_keyboard()
             )
