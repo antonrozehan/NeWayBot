@@ -632,16 +632,32 @@ class Database:
         """Смены, которые координатор выдал сотруднику на неделю"""
         if week_start is None:
             week_start = get_week_start_str()
+        dates = []
+        try:
+            base = datetime.strptime(week_start[:10], "%Y-%m-%d").date()
+            dates = [(base + timedelta(days=i)).strftime("%d.%m.%Y") for i in range(7)]
+        except Exception:
+            dates = []
         async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute('''
+            cursor = await db.execute(
+                '''
                 SELECT id, user_id, day, date, hotel, time_start, time_end, assigned_by, week_start
                 FROM assigned_shifts
-                WHERE user_id = ? AND week_start = ?
+                WHERE user_id = ?
+                  AND (week_start = ? OR date IN ({ph}))
                 ORDER BY date, time_start
-            ''', (user_id, week_start))
+                '''.replace('{ph}', ','.join('?' * max(len(dates), 1))),
+                (user_id, week_start, *(dates if dates else ['__none__']))
+            )
             rows = await cursor.fetchall()
-            return [
-                {
+            seen = set()
+            result = []
+            for r in rows:
+                key = (r[3], r[4], r[5], r[6])
+                if key in seen:
+                    continue
+                seen.add(key)
+                result.append({
                     'id': r[0],
                     'user_id': r[1],
                     'day': r[2],
@@ -651,9 +667,8 @@ class Database:
                     'time_end': r[6],
                     'assigned_by': r[7],
                     'week_start': r[8],
-                }
-                for r in rows
-            ]
+                })
+            return result
 
     async def is_user_assigned_on_date(self, user_id, date):
         week_start = get_week_start_str()

@@ -660,67 +660,89 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== МОЙ ГРАФИК ==========
     if text == "📋 Мой график":
-        week_start = get_week_start_str()
-        # Смены от координатора (готовая рассылка)
+        current_week = get_week_start_str()
+        submit_week = get_submit_week_start_str()
+        current_range = get_week_range_from_str(current_week)
+        submit_range = get_week_range_from_str(submit_week)
+
         assigned = []
-        if hasattr(db, 'get_assigned_shifts_for_user'):
-            assigned = await db.get_assigned_shifts_for_user(user_id, week_start)
-        else:
-            all_a = await db.get_assigned_shifts_for_week(week_start)
+        try:
+            assigned = await db.get_assigned_shifts_for_user(user_id, current_week)
+        except Exception:
+            all_a = await db.get_assigned_shifts_for_week(current_week)
             assigned = [a for a in all_a if a.get('user_id') == user_id]
-        
-        # Доп. смены (подтверждение лимита)
-        extra_shifts = await db.get_user_shifts(user_id)
-        # Что официант сам указал как доступность
-        availability = await db.get_user_schedule(user_id)
-        
-        if not assigned and not extra_shifts and not availability:
-            await update.message.reply_text(
-                f"{format_header('Mój grafik', '📋')}"
-                f"📅 <b>{get_week_range_text()}</b>\n\n"
-                f"{format_info('Na ten tydzień nie ma jeszcze zmian')}\n\n"
-                "💡 <i>Gdy kierownik wyśle grafik — pojawi się tutaj</i>",
-                parse_mode='HTML',
-                reply_markup=get_main_menu_inline()
-            )
-            return
-        
+
+        extra_shifts = []
+        try:
+            extra_shifts = await db.get_user_shifts(user_id) or []
+        except Exception:
+            extra_shifts = []
+        week_dates = set()
+        try:
+            base = datetime.strptime(current_week, "%Y-%m-%d").date()
+            week_dates = {(base + timedelta(days=i)).strftime("%d.%m.%Y") for i in range(7)}
+        except Exception:
+            pass
+        extra_this_week = [
+            s for s in extra_shifts
+            if not week_dates or normalize_date(s.get('date')) in week_dates
+        ]
+
+        avail_current = await db.get_user_schedule(user_id, current_week)
+        avail_next = None
+        if submit_week != current_week:
+            avail_next = await db.get_user_schedule(user_id, submit_week)
+
         text_msg = f"{format_header('Mój grafik', '📋')}"
-        text_msg += f"📅 <b>{get_week_range_text()}</b>\n"
+        text_msg += f"📅 <b>Ten tydzień: {current_range}</b>\n"
         text_msg += "─" * 35 + "\n\n"
-        
-        # 1) Главное — смены, которые выдал координатор
+
+        text_msg += "1️⃣ <b>ZMIANY OD KIEROWNIKA</b>\n"
+        text_msg += "<i>(gotowy grafik ze rozsyłki)</i>\n\n"
         if assigned:
-            text_msg += "📌 <b>Twoje zmiany (od kierownika):</b>\n\n"
             by_date = {}
             for s in assigned:
-                by_date.setdefault(s.get('date') or '', []).append(s)
-            for date in sorted(by_date.keys()):
+                by_date.setdefault(normalize_date(s.get('date')) or s.get('date') or '', []).append(s)
+            for date in sorted(k for k in by_date if k):
                 text_msg += f"📆 <b>{date}</b>\n"
                 for s in by_date[date]:
-                    hotel = s.get('hotel') or '—'
-                    t0 = s.get('time_start') or ''
-                    t1 = s.get('time_end') or ''
-                    text_msg += f"📍 <b>{hotel}</b>\n"
-                    text_msg += f"⏰ {t0}-{t1}\n"
+                    text_msg += f"📍 <b>{s.get('hotel') or '—'}</b>\n"
+                    text_msg += f"⏰ {s.get('time_start') or ''}-{s.get('time_end') or ''}\n"
                 text_msg += "\n"
         else:
-            text_msg += f"{format_info('Kierownik jeszcze nie przydzielił zmian na ten tydzień')}\n\n"
-        
-        # 2) Доп. смены (кнопка potwierdź)
-        if extra_shifts:
+            text_msg += "😔 Uvy, na ten tydzień nie dostałeś zmian.\n\n"
+
+        if extra_this_week:
             text_msg += "➕ <b>Dodatkowe zmiany:</b>\n"
-            for s in extra_shifts:
-                status_icon = "✅" if s.get('status') == 'confirmed' else "⏳"
-                text_msg += f"{status_icon} <b>{s.get('hotel')}</b>\n"
-                text_msg += f"   📆 {s.get('date')}  ⏰ {s.get('time_start')}-{s.get('time_end')}\n"
+            for s in extra_this_week:
+                icon = "✅" if s.get('status') == 'confirmed' else "⏳"
+                text_msg += (
+                    f"{icon} <b>{s.get('hotel')}</b>  "
+                    f"📆 {s.get('date')}  ⏰ {s.get('time_start')}-{s.get('time_end')}\n"
+                )
             text_msg += "\n"
-        
-        # 3) Опционально — что сам отправил (доступность)
-        if availability and str(availability).strip():
-            text_msg += "📝 <b>Twoja dostępność (wysłany grafik):</b>\n"
-            text_msg += f"<i>{availability}</i>\n"
-        
+
+        text_msg += "─" * 35 + "\n\n"
+        text_msg += "2️⃣ <b>TWÓJ WYSŁANY GRAFIK</b>\n"
+        text_msg += "<i>(kiedy możesz pracować — to widzi kierownik)</i>\n\n"
+
+        if avail_current and str(avail_current).strip():
+            text_msg += f"📅 Ten tydzień <b>{current_range}</b>:\n{avail_current}\n\n"
+        else:
+            text_msg += f"📅 Ten tydzień <b>{current_range}</b>: brak wysłanego grafiku\n\n"
+
+        collecting = datetime.now().weekday() in (4, 5) or TEST_ALLOW_SCHEDULE_ANY_DAY
+        if submit_week != current_week:
+            text_msg += f"📅 Następny tydzień <b>{submit_range}</b>:\n"
+            if avail_next and str(avail_next).strip():
+                text_msg += f"{avail_next}\n"
+                if collecting:
+                    text_msg += "✏️ Zmiana 1 raz: «✏️ Изменить график»\n"
+            else:
+                text_msg += "jeszcze nie wysłałeś\n"
+                if collecting:
+                    text_msg += "📝 Wyślij: «📝 Отправить график»\n"
+
         await update.message.reply_text(
             text_msg,
             parse_mode='HTML',
