@@ -74,6 +74,19 @@ def get_week_range_from_str(week_start: str) -> str:
     return f"{start.strftime('%d.%m.%Y')} - {end.strftime('%d.%m.%Y')}"
 
 
+def normalize_date(value) -> str:
+    """Приводит дату к DD.MM.YYYY для сравнения назначений."""
+    if not value:
+        return ""
+    raw = str(value).strip()
+    for fmt in ("%d.%m.%Y", "%d.%m.%y", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%d.%m.%Y")
+        except ValueError:
+            continue
+    return raw
+
+
 def get_submit_week_range_text():
     """Неделя, на которую сейчас собирают графики (пт–сб = следующая)."""
     return get_week_range_from_str(get_submit_week_start_str())

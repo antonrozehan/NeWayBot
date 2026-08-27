@@ -290,14 +290,42 @@ class Database:
             row = await cursor.fetchone()
             return row[0] if row else None
 
-    async def get_assigned_shifts_for_week(self, week_start):
+    async def get_latest_schedule_week(self):
         async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute('''
-                SELECT * FROM assigned_shifts WHERE week_start = ?
-            ''', (week_start,))
+            cursor = await db.execute(
+                'SELECT week_start, COUNT(*) FROM user_schedules '
+                'WHERE week_start IS NOT NULL AND week_start != "" '
+                'GROUP BY week_start ORDER BY week_start DESC LIMIT 1'
+            )
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+    async def get_assigned_shifts_for_week(self, week_start):
+        dates = []
+        try:
+            base = datetime.strptime(week_start[:10], "%Y-%m-%d").date()
+            dates = [(base + timedelta(days=i)).strftime("%d.%m.%Y") for i in range(7)]
+        except Exception:
+            dates = []
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                '''
+                SELECT id, user_id, day, date, hotel, time_start, time_end, assigned_by, week_start
+                FROM assigned_shifts
+                WHERE week_start = ?
+                   OR date IN ({placeholders})
+                '''.replace('{placeholders}', ','.join('?' * max(len(dates), 1))),
+                (week_start, *(dates if dates else ['__none__']))
+            )
             rows = await cursor.fetchall()
-            return [
-                {
+            result = []
+            seen = set()
+            for r in rows:
+                key = (r[1], r[3], r[4], r[5])
+                if key in seen:
+                    continue
+                seen.add(key)
+                result.append({
                     'id': r[0],
                     'user_id': r[1],
                     'day': r[2],
@@ -307,10 +335,8 @@ class Database:
                     'time_end': r[6],
                     'assigned_by': r[7],
                     'week_start': r[8],
-                    'created_at': r[9]
-                }
-                for r in rows
-            ]
+                })
+            return result
 
     async def clear_assigned_shifts_for_week(self, week_start):
         async with aiosqlite.connect(self.db_path) as db:

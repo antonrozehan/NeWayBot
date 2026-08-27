@@ -1004,7 +1004,13 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== ВСЕ ГРАФИКИ ==========
     if text == "📊 Все графики":
-        schedules = await db.get_all_schedules_with_users()
+        week_start = get_week_start_str()
+        schedules = await db.get_all_schedules_with_users(week_start)
+        if not schedules and hasattr(db, 'get_latest_schedule_week'):
+            latest = await db.get_latest_schedule_week()
+            if latest and latest != week_start:
+                week_start = latest
+                schedules = await db.get_all_schedules_with_users(week_start)
         if not schedules:
             await update.message.reply_text(
                 f"{format_header('Все графики', '📊')}"
@@ -1014,18 +1020,14 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_admin_reply_keyboard()
             )
             return
-        
-        text_msg = f"{format_header('Все графики', '📊')}"
-        text_msg += f"📅 <b>{get_week_range_text()}</b>\n\n"
-        
-        for s in schedules:
-            text_msg += f"👤 <b>{s['full_name']}</b>\n"
-            text_msg += f"📱 @{s['username'] or 'нет username'}\n"
-            text_msg += f"{s['schedule_text']}\n"
-            text_msg += "─" * 30 + "\n"
-        
+
+        week_range = get_week_range_from_str(week_start)
+        names = "\n".join(f"• {s.get('full_name') or s.get('user_id')}" for s in schedules)
         await update.message.reply_text(
-            text_msg,
+            f"{format_header('Все графики', '📊')}"
+            f"📅 <b>{week_range}</b>\n"
+            f"👥 {len(schedules)}\n\n{names}\n\n"
+            f"{format_info('Полный текст — в Excel-отчете')}",
             parse_mode='HTML',
             reply_markup=get_admin_reply_keyboard()
         )
@@ -1171,7 +1173,13 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ========== EXCEL-ОТЧЕТ ==========
     if text == "📁 Excel-отчет":
-        schedules = await db.get_all_schedules_with_users()
+        week_start = get_week_start_str()
+        schedules = await db.get_all_schedules_with_users(week_start)
+        if not schedules and hasattr(db, 'get_latest_schedule_week'):
+            latest = await db.get_latest_schedule_week()
+            if latest:
+                week_start = latest
+                schedules = await db.get_all_schedules_with_users(week_start)
         
         if not schedules:
             await update.message.reply_text(
@@ -1184,7 +1192,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        week_start = get_week_start_str()
         ensure_excel_path(week_start)
         excel_path = excel_exporter.export_schedules_to_excel(schedules, week_start)
         
@@ -1232,13 +1239,17 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         assigned_shifts = await db.get_assigned_shifts_for_week(week_start)
         
         assigned_dates_by_user = {}
+        assigned_days_by_user = {}
         for shift in assigned_shifts:
             user_id_db = shift['user_id']
-            date = shift['date']
-            if user_id_db not in assigned_dates_by_user:
-                assigned_dates_by_user[user_id_db] = []
-            if date not in assigned_dates_by_user[user_id_db]:
+            date = normalize_date(shift.get('date'))
+            day_name = (shift.get('day') or '').strip()
+            assigned_dates_by_user.setdefault(user_id_db, [])
+            assigned_days_by_user.setdefault(user_id_db, [])
+            if date and date not in assigned_dates_by_user[user_id_db]:
                 assigned_dates_by_user[user_id_db].append(date)
+            if day_name and day_name not in assigned_days_by_user[user_id_db]:
+                assigned_days_by_user[user_id_db].append(day_name)
         
         not_assigned = []
         days_order = ['Poniedziałek', 'Wtorek', 'Środa', 'Czwartek', 'Piątek', 'Sobota', 'Niedziela']
@@ -1304,11 +1315,14 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not employee_days:
                 continue
             
-            assigned_dates = assigned_dates_by_user.get(user_id_db, [])
+            assigned_dates = [normalize_date(d) for d in assigned_dates_by_user.get(user_id_db, [])]
+            assigned_days = assigned_days_by_user.get(user_id_db, [])
             missing_dates = []
             
             for emp_day in employee_days:
-                if emp_day['date'] not in assigned_dates:
+                date_ok = normalize_date(emp_day['date']) in assigned_dates
+                day_ok = emp_day['day'] in assigned_days
+                if not date_ok and not day_ok:
                     missing_dates.append({
                         'day': emp_day['day'],
                         'date': emp_day['date'],
@@ -1320,13 +1334,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     'full_name': full_name,
                     'username': username,
                     'missing_dates': missing_dates,
-                    'employee_days': employee_days
-                })
-            elif not assigned_dates:
-                not_assigned.append({
-                    'full_name': full_name,
-                    'username': username,
-                    'missing_dates': employee_days,
                     'employee_days': employee_days
                 })
         
