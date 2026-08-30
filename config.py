@@ -55,7 +55,7 @@ HOTELS = [
 SHIFT_TYPES = [
     "Normal",
     "Śniadania",
-    "Floor"
+    "Presidential Floor"
 ]
 
 # Отели, для которых доступны Śniadania
